@@ -80,12 +80,15 @@ input:focus,select:focus{outline:none;border-color:#B45309}
 <body>
 <div id="root"></div>
 <!-- ================================================================
-  EDIT THIS SECTION — Supabase Config and Admin Emails
+  EDIT THIS SECTION — Supabase Config, UPI, and Admin Emails
 ================================================================ -->
 <script>
 window.GH_CONFIG = {
   supabaseUrl: "https://glaksnwcmiijiztsncvi.supabase.co",
-  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo"
+  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
+  // UPI payment — leave blank to disable UPI link on bills
+  upiId:     "9503019681-3@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
+  hotelName: "Gavthan"               // shown in customer's UPI app
 };
 // Emails that get Admin access — everyone else is Staff
 window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com"];
@@ -97,6 +100,8 @@ window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com"];
 // ── CONFIG ─────────────────────────────────────────
 var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
 var SUPABASE_KEY    = (window.GH_CONFIG||{}).supabaseKey  || '';
+var UPI_ID          = (window.GH_CONFIG||{}).upiId        || '';
+var HOTEL_NAME      = (window.GH_CONFIG||{}).hotelName    || 'Gavthan';
 var ADMIN_EMAILS    = ((window.GH_ADMINS)||[]).map(function(e){return e.toLowerCase();});
 var INIT_CATS = ['Breakfast','Veg','Non-Veg','Bhakri','Chapati','Cold Drinks','Water Bottle','Glasses'];
 var PALETTE   = [['#FAEEDA','#412402'],['#EAF3DE','#27500A'],['#FAECE7','#4A1B0C'],['#E6F1FB','#042C53'],['#EEEDFE','#26215C'],['#E1F5EE','#04342C'],['#FBEAF0','#4B1528'],['#FAE8E0','#3B1005']];
@@ -913,6 +918,14 @@ function BillModal(props){
     });
     lines.push('────────────────────');
     lines.push('*TOTAL: ₹'+t+'*');
+    if(UPI_ID){
+      lines.push('');
+      lines.push('*Pay via UPI — tap the link below:*');
+      var note='Bill-'+cust.name.replace(/[^a-zA-Z0-9 ]/g,'')+'-Room'+cust.room.replace(/[^a-zA-Z0-9 ]/g,'');
+      var upiLink='upi://pay?pa='+UPI_ID+'&pn='+encodeURIComponent(HOTEL_NAME)+'&am='+t+'&cu=INR&tn='+encodeURIComponent(note);
+      lines.push(upiLink);
+      lines.push('(Opens GPay/PhonePe/Paytm with ₹'+t+' pre-filled)');
+    }
     lines.push('');
     lines.push('Thank you for visiting Gavthan!');
     return lines.join('\n');
@@ -952,7 +965,7 @@ function BillModal(props){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Bill</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr><div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div><div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Bill</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr><div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
     // Iframe-based printing — bypasses popup blockers
     var iframe=document.createElement('iframe');
     iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
