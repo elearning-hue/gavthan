@@ -109,11 +109,11 @@ var INIT_MENU = [
   {id:'v3',cat:'Veg',name:'Usal',price:70},{id:'v4',cat:'Veg',name:'Aloo Sabzi',price:70},
   {id:'v5',cat:'Veg',name:'Dahi',price:30},{id:'v6',cat:'Veg',name:'Papad',price:15},
   {id:'n1',cat:'Non-Veg',name:'Egg Bhurji',price:70},{id:'n2',cat:'Non-Veg',name:'Omelette',price:60},
-  {id:'n3',cat:'Non-Veg',name:'Chicken Curry',price:400},{id:'n4',cat:'Non-Veg',name:'Mutton Curry',price:400},
+  {id:'n3',cat:'Non-Veg',name:'Chicken Curry',price:130},{id:'n4',cat:'Non-Veg',name:'Mutton Curry',price:160},
   {id:'n5',cat:'Non-Veg',name:'Fish Curry',price:120},
-  {id:'k1',cat:'Bhakri',name:'Jowar Bhakri',price:30},{id:'k2',cat:'Bhakri',name:'Bajra Bhakri',price:30},
-  {id:'c1',cat:'Chapati',name:'Chapati',price:15},{id:'c2',cat:'Chapati',name:'Butter Chapati',price:25},{id:'c3',cat:'Chapati',name:'Paratha',price:40},
-  {id:'d1',cat:'Cold Drinks',name:'Coca Cola',price:50},{id:'d2',cat:'Cold Drinks',name:'Sprite',price:50},
+  {id:'k1',cat:'Bhakri',name:'Jowar Bhakri',price:15},{id:'k2',cat:'Bhakri',name:'Bajra Bhakri',price:15},
+  {id:'c1',cat:'Chapati',name:'Chapati',price:10},{id:'c2',cat:'Chapati',name:'Butter Chapati',price:15},{id:'c3',cat:'Chapati',name:'Paratha',price:20},
+  {id:'d1',cat:'Cold Drinks',name:'Coca Cola',price:40},{id:'d2',cat:'Cold Drinks',name:'Sprite',price:40},
   {id:'d3',cat:'Cold Drinks',name:'Maaza',price:35},{id:'d4',cat:'Cold Drinks',name:'Limca',price:40},
   {id:'w1',cat:'Water Bottle',name:'Water 1L',price:20},{id:'w2',cat:'Water Bottle',name:'Water 500ml',price:15},
   {id:'g1',cat:'Glasses',name:'Disposable Glass',price:5},{id:'g2',cat:'Glasses',name:'Tea Glass',price:3}
@@ -222,7 +222,7 @@ function LoginScreen(props){
     if(!email.trim()||!pass){setErr('Email and password required.');return;}
     if(mode==='register'&&!name.trim()){setErr('Name required.');return;}
     if(mode==='register'&&pass.length<6){setErr('Password min 6 characters.');return;}
-    setBusy(true);setErr('');
+    setBusy(true);setErr('');setConfirmMsg('');
     if(mode==='login'){
       supa.auth.signInWithPassword({email:email.trim(),password:pass})
         .then(function(r){
@@ -234,31 +234,45 @@ function LoginScreen(props){
             }
             setBusy(false);return;
           }
-          return supa.from('mh_users').select('active').eq('id',r.data.user.id).maybeSingle();
-        })
-        .then(function(r){
-          if(r&&r.data&&r.data.active===false){
-            supa.auth.signOut();
-            setErr('Account disabled. Contact admin.');
-            setBusy(false);
-          }
+          var u=r.data.user;
+          return supa.from('mh_users').select('*').eq('id',u.id).maybeSingle()
+            .then(function(rr){
+              if(rr.error) throw new Error(rr.error.message);
+              if(!rr.data){
+                // First-time login — auto-create mh_users record
+                var role=isAdminEmail(u.email)?'admin':'user';
+                var dn=(u.user_metadata&&u.user_metadata.display_name)||u.email.split('@')[0];
+                return supa.from('mh_users').insert({id:u.id,email:u.email,display_name:dn,role:role,active:true});
+              }
+              if(rr.data.active===false){
+                supa.auth.signOut();
+                setErr('Account disabled. Contact admin.');
+                setBusy(false);
+              }
+            });
         })
         .catch(function(e){setErr(e.message);setBusy(false);});
     } else {
       var role=isAdminEmail(email.trim())?'admin':'user';
-      supa.auth.signUp({email:email.trim(),password:pass})
+      supa.auth.signUp({
+        email:email.trim(),
+        password:pass,
+        options:{data:{display_name:name.trim()}}
+      })
         .then(function(r){
           if(r.error)throw new Error(r.error.message);
-          if(!r.data.session){
-            // Email confirmation required — don't hang, show message
-            setErr('');setBusy(false);
-            setConfirmMsg('✓ Account created! Check your inbox at '+email.trim()+' and click the confirmation link to login.');
-            return;
+          // ALWAYS show confirmation — promise chain completes, button stops spinning
+          setBusy(false);
+          setErr('');
+          setConfirmMsg('✓ Account created! Please check your email ('+email.trim()+') for the confirmation link. After confirming, come back here and login.');
+          // If auto-confirm mode (session exists), also insert mh_users record now
+          if(r.data&&r.data.session&&r.data.user){
+            return supa.from('mh_users').insert({
+              id:r.data.user.id,email:email.trim(),display_name:name.trim(),
+              role:role,active:true
+            });
           }
-          var uid=r.data.user.id;
-          return supa.from('mh_users').insert({id:uid,email:email.trim(),display_name:name.trim(),role:role,active:true});
         })
-        .then(function(r){if(r&&r.error)throw new Error(sbErr(r.error));})
         .catch(function(e){setErr(e.message);setBusy(false);});
     }
   }
@@ -864,11 +878,21 @@ function BillModal(props){
   var t=tot(cust.items);
 
   function billText(){
-    var lines=['*GAVTHAN — Bill*','Customer: '+cust.name,'Room/Table: '+cust.room,
-      'Date: '+todayStr()+'  Time: '+timeStr(),'─────────────────'];
-    cust.items.forEach(function(i){lines.push(i.name+' x'+i.qty+' = ₹'+(i.price*i.qty));});
-    lines.push('─────────────────');
+    var lines=[];
+    lines.push('*GAVTHAN — Bill*');
+    lines.push('Customer: '+cust.name);
+    lines.push('Room/Table: '+cust.room);
+    lines.push('Date: '+todayStr()+'  Time: '+timeStr());
+    lines.push('────────────────────');
+    lines.push('*Items Ordered*');
+    cust.items.forEach(function(i,idx){
+      lines.push('');
+      lines.push((idx+1)+'. '+i.name);
+      lines.push('   Qty: '+i.qty+' × Rate: ₹'+i.price+' = ₹'+(i.price*i.qty));
+    });
+    lines.push('────────────────────');
     lines.push('*TOTAL: ₹'+t+'*');
+    lines.push('');
     lines.push('Thank you for visiting Gavthan!');
     return lines.join('\n');
   }
