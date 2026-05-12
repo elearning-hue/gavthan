@@ -1,2 +1,2 @@
 # github.io
-Web Hosting for Gavthan Project
+Bill Management app for Gavthan Project
