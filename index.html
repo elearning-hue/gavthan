@@ -87,6 +87,7 @@ window.GH_CONFIG = {
   supabaseUrl: "https://glaksnwcmiijiztsncvi.supabase.co",
   supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo"
 };
+// Emails that get Admin access — everyone else is Staff
 window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com"];
 </script>
 <!-- END OF EDITABLE SECTION -->
@@ -108,11 +109,11 @@ var INIT_MENU = [
   {id:'v3',cat:'Veg',name:'Usal',price:70},{id:'v4',cat:'Veg',name:'Aloo Sabzi',price:70},
   {id:'v5',cat:'Veg',name:'Dahi',price:30},{id:'v6',cat:'Veg',name:'Papad',price:15},
   {id:'n1',cat:'Non-Veg',name:'Egg Bhurji',price:70},{id:'n2',cat:'Non-Veg',name:'Omelette',price:60},
-  {id:'n3',cat:'Non-Veg',name:'Chicken Curry',price:130},{id:'n4',cat:'Non-Veg',name:'Mutton Curry',price:160},
+  {id:'n3',cat:'Non-Veg',name:'Chicken Curry',price:400},{id:'n4',cat:'Non-Veg',name:'Mutton Curry',price:400},
   {id:'n5',cat:'Non-Veg',name:'Fish Curry',price:120},
-  {id:'k1',cat:'Bhakri',name:'Jowar Bhakri',price:15},{id:'k2',cat:'Bhakri',name:'Bajra Bhakri',price:15},
-  {id:'c1',cat:'Chapati',name:'Chapati',price:10},{id:'c2',cat:'Chapati',name:'Butter Chapati',price:15},{id:'c3',cat:'Chapati',name:'Paratha',price:20},
-  {id:'d1',cat:'Cold Drinks',name:'Coca Cola',price:40},{id:'d2',cat:'Cold Drinks',name:'Sprite',price:40},
+  {id:'k1',cat:'Bhakri',name:'Jowar Bhakri',price:30},{id:'k2',cat:'Bhakri',name:'Bajra Bhakri',price:30},
+  {id:'c1',cat:'Chapati',name:'Chapati',price:15},{id:'c2',cat:'Chapati',name:'Butter Chapati',price:25},{id:'c3',cat:'Chapati',name:'Paratha',price:40},
+  {id:'d1',cat:'Cold Drinks',name:'Coca Cola',price:50},{id:'d2',cat:'Cold Drinks',name:'Sprite',price:50},
   {id:'d3',cat:'Cold Drinks',name:'Maaza',price:35},{id:'d4',cat:'Cold Drinks',name:'Limca',price:40},
   {id:'w1',cat:'Water Bottle',name:'Water 1L',price:20},{id:'w2',cat:'Water Bottle',name:'Water 500ml',price:15},
   {id:'g1',cat:'Glasses',name:'Disposable Glass',price:5},{id:'g2',cat:'Glasses',name:'Tea Glass',price:3}
@@ -570,7 +571,11 @@ function NewTab(props){
   useEffect(function(){setName('Cust '+(todayCnt+1));},[todayCnt]);
   function submit(){
     if(!name.trim()||!room.trim()){setMsg('Name and room required.');return;}
-    addCust(name.trim(),room.trim(),phone.trim());
+    var ph=phone.trim().replace(/\D/g,'');
+    if(ph && ph.length!==10){
+      setMsg('Phone must be exactly 10 digits (or leave empty).');return;
+    }
+    addCust(name.trim(),room.trim(),ph);
     setRoom('');setPhone('');setMsg('Customer added!');
     setTimeout(function(){setMsg('');},3000);
   }
@@ -868,6 +873,7 @@ function BillModal(props){
     return lines.join('\n');
   }
   function sendWhatsApp(){
+    if(t===0){alert('Cannot send a zero-amount bill. Add items first.');return;}
     var phone=(cust.phone||'').replace(/\D/g,'');
     if(phone.length===10) phone='91'+phone;
     var url=phone
@@ -876,18 +882,30 @@ function BillModal(props){
     window.open(url,'_blank');
   }
   function sendSMS(){
+    if(t===0){alert('Cannot send a zero-amount bill. Add items first.');return;}
     var phone=(cust.phone||'').replace(/\D/g,'');
     if(!phone){alert('No phone number saved for this customer.');return;}
     if(phone.length===10) phone='+91'+phone;
     else if(phone.charAt(0)!=='+') phone='+'+phone;
-    // sms: URI works on both iOS and Android. Uses ? on iOS, & on Android — both accept ?
     var url='sms:'+phone+'?body='+encodeURIComponent(billText());
     window.location.href=url;
   }
-  function printBill(){'*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+  function printBill(){
+    if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
+    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
     var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Bill</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr><div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div><div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
-    var w=window.open('','_blank','width=360,height=560');w.document.write(html);w.document.close();setTimeout(function(){w.print();},350);
+    // Iframe-based printing — bypasses popup blockers
+    var iframe=document.createElement('iframe');
+    iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(iframe);
+    var doc=iframe.contentDocument||iframe.contentWindow.document;
+    doc.open();doc.write(html);doc.close();
+    setTimeout(function(){
+      try{iframe.contentWindow.focus();iframe.contentWindow.print();}
+      catch(e){alert('Print failed: '+e.message);}
+      setTimeout(function(){document.body.removeChild(iframe);},2000);
+    },300);
   }
   return h('div',{className:'ovl',onClick:onClose},
     h('div',{className:'modal',onClick:function(e){e.stopPropagation();}},
