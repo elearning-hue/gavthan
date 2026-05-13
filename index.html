@@ -429,6 +429,7 @@ function App(props){
   function settle(cid){
     var cust=custs.find(function(c){return c.id===cid;});
     if(!cust)return;
+    if(!admin&&cust.added_by!==user.email){alert('You can only settle your own orders. Ask an admin.');return;}
     if(tot(cust.items)===0){alert('Cannot settle zero-amount bill. Add items first.');return;}
     if(!confirm('Settle this customer?'))return;
     var now=new Date().toISOString();
@@ -438,6 +439,9 @@ function App(props){
       .catch(showErr);
   }
   function delCust(cid){
+    var cust=custs.find(function(c){return c.id===cid;});
+    if(!cust)return;
+    if(!admin&&cust.added_by!==user.email){alert('You can only delete your own orders. Ask an admin.');return;}
     if(!confirm('Delete this record?'))return;
     supa.from('mh_customers').delete().eq('id',cid)
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
@@ -509,7 +513,9 @@ function App(props){
     supa.auth.signOut().then(function(){setTab('orders');setSelId(null);setBillId(null);});
   }
 
-  var active=custs.filter(function(c){return c.status==='active';});
+  var active=admin
+    ? custs.filter(function(c){return c.status==='active';})
+    : custs.filter(function(c){return c.status==='active'&&c.added_by===user.email;});
   var settled=custs.filter(function(c){return c.status==='settled';});
   var todaySett=settled.filter(function(c){return c.settled_at&&new Date(c.settled_at).toDateString()===new Date().toDateString();});
   var todayRev=todaySett.reduce(function(s,c){return s+tot(c.items);},0);
@@ -996,32 +1002,47 @@ function BillModal(props){
   var cust=props.cust,onClose=props.onClose,onSavePhone=props.onSavePhone;
   var t=tot(cust.items);
 
+  function pad(s,n){s=String(s);while(s.length<n)s+=' ';return s;}
+  function padL(s,n){s=String(s);while(s.length<n)s=' '+s;return s;}
+
   function billText(){
     var lines=[];
-    lines.push('*GAVTHAN — Bill*');
-    lines.push('Customer: '+cust.name);
-    lines.push('Room/Table: '+cust.room);
-    lines.push('Date: '+todayStr()+'  Time: '+timeStr());
-    lines.push('────────────────────');
-    lines.push('*Items Ordered*');
-    cust.items.forEach(function(i,idx){
-      lines.push('');
-      lines.push((idx+1)+'. '+i.name);
-      lines.push('   Qty: '+i.qty+' × Rate: ₹'+i.price+' = ₹'+(i.price*i.qty));
+    // Header
+    lines.push('*GAVTHAN*');
+    lines.push('_Receipt / Bill_');
+    lines.push('');
+    lines.push('Customer: *'+cust.name+'*');
+    lines.push('Room/Table: *'+cust.room+'*');
+    lines.push('Date: '+todayStr()+'   Time: '+timeStr());
+    if(cust.phone) lines.push('Phone: '+cust.phone);
+    lines.push('');
+    // Monospace table — WhatsApp renders triple-backtick blocks in fixed-width font
+    lines.push('```');
+    lines.push('Item             Qty  Rate    Amt');
+    lines.push('----------------------------------');
+    cust.items.forEach(function(i){
+      var nm=i.name.length>16?i.name.substring(0,15)+'.':i.name;
+      lines.push(pad(nm,17)+padL(i.qty,3)+'  '+padL('Rs'+i.price,6)+'  '+padL('Rs'+(i.price*i.qty),6));
     });
-    lines.push('────────────────────');
-    lines.push('*TOTAL: ₹'+t+'*');
+    lines.push('----------------------------------');
+    lines.push(pad('TOTAL',24)+padL('Rs'+t,8));
+    lines.push('```');
+    // UPI payment link (clean, integer amount, URL-encoded params)
     if(UPI_ID){
-      var upiLink='upi://pay?pa='+UPI_ID+'&pn='+encodeURIComponent(HOTEL_NAME)+'&am='+t+'&cu=INR&tn='+encodeURIComponent(HOTEL_NAME);
+      var amt=Math.round(Number(t)); // ensure integer, no decimals
+      var upiLink='upi://pay'
+        +'?pa='+encodeURIComponent(UPI_ID)
+        +'&pn='+encodeURIComponent(HOTEL_NAME)
+        +'&am='+amt
+        +'&cu=INR'
+        +'&tn='+encodeURIComponent(HOTEL_NAME);
       lines.push('');
-      lines.push('────────────────────');
-      lines.push('💳 *PAY ₹'+t+' INSTANTLY*');
-      lines.push('Tap below to pay via GPay/PhonePe/Paytm:');
+      lines.push('💳 *PAY ₹'+amt+' INSTANTLY*');
+      lines.push('Tap the link below — your UPI app opens with ₹'+amt+' pre-filled:');
       lines.push(upiLink);
-      lines.push('────────────────────');
     }
     lines.push('');
-    lines.push('Thank you for visiting Gavthan!');
+    lines.push('_Thank you for visiting Gavthan!_');
     return lines.join('\n');
   }
 
