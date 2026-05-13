@@ -244,14 +244,23 @@ function LoginScreen(props){
             .then(function(rr){
               if(rr.error) throw new Error(rr.error.message);
               if(!rr.data){
-                // First-time login — auto-create mh_users record
+                // First-time login — auto-create mh_users record (pending unless bootstrap admin)
                 var role=isAdminEmail(u.email)?'admin':'user';
                 var dn=(u.user_metadata&&u.user_metadata.display_name)||u.email.split('@')[0];
-                return supa.from('mh_users').insert({id:u.id,email:u.email,display_name:dn,role:role,active:true});
+                return supa.from('mh_users').insert({id:u.id,email:u.email,display_name:dn,role:role,active:isAdminEmail(u.email)})
+                  .then(function(){
+                    if(!isAdminEmail(u.email)){
+                      supa.auth.signOut();
+                      setErr('Account created — awaiting admin approval. You will be able to login once approved.');
+                      setBusy(false);
+                    }
+                  });
               }
               if(rr.data.active===false){
                 supa.auth.signOut();
-                setErr('Account disabled. Contact admin.');
+                setErr(rr.data.role==='deleted'
+                  ?'Your account has been removed. Contact admin.'
+                  :'Account awaiting admin approval. Please try again later.');
                 setBusy(false);
               }
             });
@@ -278,9 +287,10 @@ function LoginScreen(props){
           setErr('');
           setConfirmMsg('✓ Account created! Please check your email ('+email.trim()+') for the confirmation link. After confirming, come back here and login.');
           if(r.data&&r.data.session&&u){
+            // Bootstrap admins (in GH_ADMINS) auto-approved; everyone else pending
             return supa.from('mh_users').insert({
               id:u.id,email:email.trim(),display_name:name.trim(),
-              role:role,active:true
+              role:role,active:isAdminEmail(email.trim())
             });
           }
         })
@@ -512,11 +522,12 @@ function App(props){
       .then(function(){fetchAll();}).catch(showErr);
   }
   function deleteUser(id,email){
-    if(!confirm('Delete user '+email+'?\n\nThis removes them from the user list and revokes app access. The Supabase auth account itself stays — to fully erase it, use Supabase Dashboard → Authentication → Users.'))return;
-    // Soft-delete by removing mh_users row AND setting deleted_at would be ideal,
-    // but to prevent auto-recreate on next login we set active=false AND clear role.
-    supa.from('mh_users').update({active:false,role:'deleted'}).eq('id',id)
+    if(!confirm('Delete user "'+email+'" from the app?\n\nThis removes them from the user list immediately.\n\n⚠ To fully delete their Supabase auth account (so the email can never be used again), go to:\nSupabase Dashboard → Authentication → Users → find this email → click ⋯ → Delete user'))return;
+    supa.from('mh_users').delete().eq('id',id)
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
+      .then(function(){
+        alert('Removed "'+email+'" from app users.\n\nIMPORTANT: To prevent them from re-creating their account on next login, also delete their auth record in Supabase Dashboard → Authentication → Users.');
+      })
       .catch(showErr);
   }
   function sendReset(email){
@@ -793,6 +804,8 @@ function HistoryTab(props){
   var _sm=useState(String(now.getMonth()+1).padStart(2,'0'));var selMonth=_sm[0];var setSelMonth=_sm[1];
   var _sy=useState(String(now.getFullYear()));var selYear=_sy[0];var setSelYear=_sy[1];
   var _ss=useState('all');var selStaff=_ss[0];var setSelStaff=_ss[1];
+  var _page=useState(0);var page=_page[0];var setPage=_page[1];
+  var PAGE_SIZE=10;
   var allRev=settled.reduce(function(s,c){return s+tot(c.items);},0);
   var staffList=users.filter(function(u){return u.active!==false;});
   var shown=settled.filter(function(c){
@@ -806,6 +819,31 @@ function HistoryTab(props){
     return true;
   }).sort(function(a,b){return new Date(b.settled_at||b.date)-new Date(a.settled_at||a.date);});
   var shownRev=shown.reduce(function(s,c){return s+tot(c.items);},0);
+  var totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
+  var safePage=Math.min(page,totalPages-1);
+  var pageItems=shown.slice(safePage*PAGE_SIZE,(safePage+1)*PAGE_SIZE);
+  // Reset to page 0 when filters change
+  useEffect(function(){setPage(0);},[searchName,dateFrom,dateTo,selMonth,selYear,selStaff,filterMode]);
+
+  function exportCSV(){
+    var headers=['Customer','Room','Phone','Created','Settled At','Items','Total','Staff'];
+    function esc(v){v=String(v==null?'':v).replace(/"/g,'""');return /[",\n]/.test(v)?'"'+v+'"':v;}
+    var rows=shown.map(function(c){
+      var itemsStr=(c.items||[]).map(function(i){return i.name+'x'+i.qty+'@'+i.price;}).join('; ');
+      return [c.name,c.room,c.phone||'',
+        c.date?new Date(c.date).toLocaleString('en-IN'):'',
+        c.settled_at?new Date(c.settled_at).toLocaleString('en-IN'):'',
+        itemsStr,tot(c.items||[]),c.added_by||''
+      ].map(esc).join(',');
+    });
+    var csv=headers.join(',')+'\n'+rows.join('\n');
+    var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); // BOM for Excel
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url;a.download='gavthan-orders-'+new Date().toISOString().slice(0,10)+'.csv';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(url);},1000);
+  }
   var months=['01','02','03','04','05','06','07','08','09','10','11','12'];
   var monthNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   var years=[];for(var y=now.getFullYear();y>=now.getFullYear()-4;y--)years.push(String(y));
@@ -818,9 +856,12 @@ function HistoryTab(props){
       h('div',{className:'met'},h('div',{className:'ml'},'Total Rev'),h('div',{className:'mv'},'₹'+allRev))
     ),
     h('div',{className:'card'},
-      h('div',{className:'row bw',style:{marginBottom:10}},
+      h('div',{className:'row bw',style:{marginBottom:10,flexWrap:'wrap',gap:6}},
         h('div',{className:'ttl',style:{margin:0}},'Billing History'),
-        hasFilter&&h('button',{className:'btn xs btn-r',onClick:function(){setSearchName('');setDateFrom('');setDateTo('');setSelStaff('all');setFilterMode('date');}},'✕ Clear')
+        h('div',{className:'row',style:{gap:4}},
+          shown.length>0&&h('button',{className:'btn xs btn-g',onClick:exportCSV,title:'Download filtered orders as CSV'},'⬇ Export CSV'),
+          hasFilter&&h('button',{className:'btn xs btn-r',onClick:function(){setSearchName('');setDateFrom('');setDateTo('');setSelStaff('all');setFilterMode('date');}},'✕ Clear')
+        )
       ),
       h('div',{className:'cats',style:{marginBottom:8}},['date','month','year'].map(function(m){
         return h('button',{key:m,className:filterMode===m?'on':'',onClick:function(){setFilterMode(m);}},{date:'By Date',month:'By Month',year:'By Year'}[m]);
@@ -848,11 +889,11 @@ function HistoryTab(props){
         )
       ),
       h('div',{className:'row bw',style:{fontSize:11,color:'#6b6b67',margin:'6px 0 8px'}},
-        h('span',null,shown.length+' record'+(shown.length!==1?'s':'')+(hasFilter?' (filtered)':'')),
+        h('span',null,shown.length+' record'+(shown.length!==1?'s':'')+(hasFilter?' (filtered)':'')+(shown.length>PAGE_SIZE?' — page '+(safePage+1)+'/'+totalPages:'')),
         shown.length>0&&h('span',{style:{fontWeight:700,color:'#B45309'}},'Total: ₹'+shownRev)
       ),
       shown.length===0?h('div',{className:'empty'},'No records found.'):
-      shown.map(function(c){
+      pageItems.map(function(c){
         var t=tot(c.items);
         var su=staffList.find(function(u){return u.email===c.added_by;});
         var sn=initCap(su?(su.display_name||su.email.split('@')[0]):(c.added_by||''));
@@ -872,7 +913,25 @@ function HistoryTab(props){
           ),
           h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':''))
         );
-      })
+      }),
+      // Pagination controls
+      shown.length>PAGE_SIZE&&h('div',{className:'row bw',style:{marginTop:10,paddingTop:8,borderTop:'1px solid #e0ddd6'}},
+        h('button',{className:'btn xs',onClick:function(){setPage(Math.max(0,safePage-1));},disabled:safePage===0,style:{opacity:safePage===0?0.4:1}},'← Prev'),
+        h('div',{style:{display:'flex',gap:3,flexWrap:'wrap',justifyContent:'center'}},
+          (function(){
+            var btns=[];
+            var maxBtns=Math.min(7,totalPages);
+            var start=Math.max(0,Math.min(safePage-3,totalPages-maxBtns));
+            for(var p=start;p<start+maxBtns;p++){
+              (function(pp){
+                btns.push(h('button',{key:pp,className:'btn xs'+(pp===safePage?' btn-a':''),style:{minWidth:28,padding:'4px 6px'},onClick:function(){setPage(pp);}},pp+1));
+              })(p);
+            }
+            return btns;
+          })()
+        ),
+        h('button',{className:'btn xs',onClick:function(){setPage(Math.min(totalPages-1,safePage+1));},disabled:safePage>=totalPages-1,style:{opacity:safePage>=totalPages-1?0.4:1}},'Next →')
+      )
     )
   );
 }
@@ -1121,15 +1180,15 @@ function BillModal(props){
     lines.push('----------------------------------');
     lines.push(pad('TOTAL',24)+padL('Rs'+t,8));
     lines.push('```');
-    // UPI payment link (clean, integer amount, URL-encoded params)
+    // UPI payment link (UPI VPA must NOT be URL-encoded; @ is literal)
     if(UPI_ID){
-      var amt=Math.round(Number(t)); // ensure integer, no decimals
-      var upiLink='upi://pay'
-        +'?pa='+encodeURIComponent(UPI_ID)
+      var amt=Math.round(Number(t)); // integer rupees, no decimals
+      // Standard NPCI UPI deep link spec — pa unencoded, pn/tn encoded
+      var upiLink='upi://pay?pa='+UPI_ID
         +'&pn='+encodeURIComponent(HOTEL_NAME)
         +'&am='+amt
         +'&cu=INR'
-        +'&tn='+encodeURIComponent(HOTEL_NAME);
+        +'&tn='+encodeURIComponent(HOTEL_NAME+' bill');
       lines.push('');
       lines.push('💳 *PAY ₹'+amt+' INSTANTLY*');
       lines.push('Tap the link below — your UPI app opens with ₹'+amt+' pre-filled:');
