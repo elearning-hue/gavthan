@@ -390,9 +390,16 @@ function App(props){
     // Fetch current user's record for display name
     supa.from('mh_users').select('*').eq('id',user.id).maybeSingle()
       .then(function(r){ if(r.data) setMyUser(r.data); }, function(){});
+    // Heartbeat — update last_seen_at every 30s so admin can see who's online
+    function heartbeat(){
+      supa.from('mh_users').update({last_seen_at:new Date().toISOString()}).eq('id',user.id)
+        .then(function(){}, function(){}); // silently ignore if column missing
+    }
+    heartbeat();
+    var hb=setInterval(heartbeat,30000);
     // Poll every 5s for live updates across devices
     var t=setInterval(fetchAll,5000);
-    return function(){clearInterval(t);};
+    return function(){clearInterval(t);clearInterval(hb);};
   },[]);
 
   function showErr(e){setAppErr(e.message||String(e));}
@@ -504,6 +511,14 @@ function App(props){
     supa.from('mh_users').update({role:newRole}).eq('id',id)
       .then(function(){fetchAll();}).catch(showErr);
   }
+  function deleteUser(id,email){
+    if(!confirm('Delete user '+email+'?\n\nThis removes them from the user list and revokes app access. The Supabase auth account itself stays — to fully erase it, use Supabase Dashboard → Authentication → Users.'))return;
+    // Soft-delete by removing mh_users row AND setting deleted_at would be ideal,
+    // but to prevent auto-recreate on next login we set active=false AND clear role.
+    supa.from('mh_users').update({active:false,role:'deleted'}).eq('id',id)
+      .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
+      .catch(showErr);
+  }
   function sendReset(email){
     supa.auth.resetPasswordForEmail(email)
       .then(function(){alert('Password reset email sent to '+email);})
@@ -530,7 +545,7 @@ function App(props){
     user.email.split('@')[0]
   );
   var tabs=[['orders','Orders'],['new','+'],['history','History']];
-  if(admin){tabs.push(['menu','Menu']);tabs.push(['users','Users']);}
+  if(admin){tabs.push(['menu','Menu']);tabs.push(['customers','Cust']);tabs.push(['users','Users']);}
 
   return h('div',{className:'wrap'},
     h('div',{className:'hdr'},
@@ -555,7 +570,8 @@ function App(props){
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
-      tab==='users'   &&admin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset})
+      tab==='customers'&&admin&&h(CustomersTab,{custs}),
+      tab==='users'   &&admin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser})
     ),
     billCust&&h(BillModal,{cust:billCust,cats,onClose:function(){setBillId(null);},
       onSavePhone:function(ph){
@@ -943,10 +959,68 @@ function MenuTab(props){
   );
 }
 
+// ── CUSTOMERS TAB (Admin) ──────────────────────────
+function CustomersTab(props){
+  var custs=props.custs||[];
+  var _q=useState('');var q=_q[0];var setQ=_q[1];
+
+  // Group customers by phone (or name+room if no phone)
+  var map={};
+  custs.forEach(function(c){
+    if(!c.name||c.name.indexOf('Cust ')===0)return; // skip auto-generated default names
+    var key=(c.phone&&c.phone.length>=10)?c.phone:(c.name+'|'+(c.room||''));
+    var spent=c.status==='settled'?tot(c.items||[]):0;
+    if(!map[key]){
+      map[key]={name:c.name,phone:c.phone||'',visits:0,settled:0,totalSpent:0,lastVisit:c.date};
+    }
+    var r=map[key];
+    r.visits++;
+    if(c.status==='settled'){r.settled++;r.totalSpent+=spent;}
+    if(new Date(c.date)>new Date(r.lastVisit)) r.lastVisit=c.date;
+  });
+  var rows=Object.keys(map).map(function(k){return map[k];})
+    .sort(function(a,b){return new Date(b.lastVisit)-new Date(a.lastVisit);});
+
+  var filtered=q.trim()?rows.filter(function(r){
+    var s=q.toLowerCase();
+    return r.name.toLowerCase().indexOf(s)!==-1||(r.phone||'').indexOf(s)!==-1;
+  }):rows;
+
+  var totalRev=rows.reduce(function(s,r){return s+r.totalSpent;},0);
+
+  return h('div',null,
+    h('div',{className:'metrics'},
+      h('div',{className:'met'},h('div',{className:'ml'},'Unique'),h('div',{className:'mv'},rows.length)),
+      h('div',{className:'met'},h('div',{className:'ml'},'Bills'),h('div',{className:'mv'},rows.reduce(function(s,r){return s+r.settled;},0))),
+      h('div',{className:'met'},h('div',{className:'ml'},'Revenue'),h('div',{className:'mv'},'₹'+totalRev))
+    ),
+    h('div',{className:'card'},
+      h('div',{className:'ttl'},'Customers'),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:8}},'Unique customers identified by phone number (or name+room if no phone).'),
+      h('input',{placeholder:'Search by name or phone…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:8}}),
+      filtered.length===0?h('div',{className:'empty'},rows.length===0?'No customers yet.':'No matches.'):
+      filtered.map(function(r,i){
+        return h('div',{key:i,className:'li',style:{flexDirection:'column',alignItems:'stretch',gap:4,paddingBottom:8}},
+          h('div',{className:'row bw'},
+            h('span',{style:{fontWeight:700,fontSize:13}},r.name),
+            h('span',{style:{fontWeight:700,color:'#B45309'}},'₹'+r.totalSpent)
+          ),
+          h('div',{className:'row',style:{gap:6,flexWrap:'wrap',fontSize:11,color:'#6b6b67'}},
+            r.phone&&h('span',null,'📞 '+r.phone),
+            h('span',null,'🗓 '+r.visits+' visit'+(r.visits!==1?'s':'')+' ('+r.settled+' settled)'),
+            h('span',null,'Last: '+fmtDT(r.lastVisit))
+          )
+        );
+      })
+    )
+  );
+}
+
 // ── USERS TAB ──────────────────────────────────────
 function UsersTab(props){
   var users=props.users,currentUid=props.currentUid,addUser=props.addUser;
-  var toggleUserActive=props.toggleUserActive,changeUserRole=props.changeUserRole,sendReset=props.sendReset;
+  var toggleUserActive=props.toggleUserActive,changeUserRole=props.changeUserRole;
+  var sendReset=props.sendReset,deleteUser=props.deleteUser;
   var _ne=useState('');var newEmail=_ne[0];var setNewEmail=_ne[1];
   var _np=useState('');var newPass=_np[0];var setNewPass=_np[1];
   var _nn=useState('');var newName=_nn[0];var setNewName=_nn[1];
@@ -961,21 +1035,41 @@ function UsersTab(props){
       if(err){setMsg('Error: '+err);}else{setMsg(ok||'Done!');setNewEmail('');setNewPass('');setNewName('');}
     });
   }
+  function isOnline(u){
+    if(!u.last_seen_at) return false;
+    return (Date.now()-new Date(u.last_seen_at).getTime()) < 2*60*1000; // active if last seen within 2 min
+  }
+  var activeCount=users.filter(isOnline).length;
   return h('div',null,
     h('div',{className:'card'},
-      h('div',{className:'ttl'},'User Management'),
-      h('div',{className:'muted',style:{fontSize:11,marginBottom:10}},users.length+' registered user'+(users.length!==1?'s':'')),
+      h('div',{className:'row bw',style:{marginBottom:10}},
+        h('div',{className:'ttl',style:{margin:0}},'User Management'),
+        h('span',{style:{fontSize:11,color:'#166534',fontWeight:700}},
+          h('span',{style:{display:'inline-block',width:8,height:8,borderRadius:'50%',background:'#22c55e',marginRight:4,boxShadow:'0 0 4px #22c55e'}}),
+          activeCount+' online'
+        )
+      ),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:10}},users.length+' registered user'+(users.length!==1?'s':'')+' · "Online" = active in last 2 minutes'),
       users.length===0&&h('div',{className:'muted',style:{fontSize:12,padding:'8px 0'}},'No users yet.'),
       users.map(function(u){
         var isSelf=u.id===currentUid;
+        var online=isOnline(u);
         return h('div',{key:u.id,className:'usr-card'},
-          h('div',{style:{flex:1,minWidth:0}},h('div',{style:{fontWeight:700,fontSize:13}},u.display_name||u.email),h('div',{className:'muted',style:{fontSize:11}},u.email)),
+          h('div',{style:{flex:1,minWidth:0}},
+            h('div',{className:'row',style:{gap:5}},
+              online&&h('span',{title:'Active now',style:{display:'inline-block',width:7,height:7,borderRadius:'50%',background:'#22c55e',boxShadow:'0 0 4px #22c55e',flexShrink:0}}),
+              h('span',{style:{fontWeight:700,fontSize:13}},u.display_name||u.email)
+            ),
+            h('div',{className:'muted',style:{fontSize:11}},u.email),
+            u.last_seen_at&&!online&&h('div',{className:'muted',style:{fontSize:10}},'Last seen: '+fmtDT(u.last_seen_at))
+          ),
           h('span',{className:u.role==='admin'?'badge-admin':'badge-user'},u.role||'user'),
           !u.active&&h('span',{className:'badge-off'},'Disabled'),
           !isSelf&&h('div',{className:'row',style:{gap:4,flexWrap:'wrap'}},
             h('button',{className:'btn xs btn-y',onClick:function(){sendReset(u.email);},'title':'Send reset email'},'📧 Reset Pwd'),
             h('button',{className:'btn xs',onClick:function(){changeUserRole(u.id,u.role==='admin'?'user':'admin');}},u.role==='admin'?'→ Staff':'→ Admin'),
-            h('button',{className:'btn xs '+(u.active?'btn-r':'btn-g'),onClick:function(){toggleUserActive(u.id,u.active);}},u.active?'Disable':'Enable')
+            h('button',{className:'btn xs '+(u.active?'btn-r':'btn-g'),onClick:function(){toggleUserActive(u.id,u.active);}},u.active?'Disable':'Enable'),
+            deleteUser&&h('button',{className:'btn xs btn-r',onClick:function(){deleteUser(u.id,u.email);},title:'Delete user'},'🗑 Delete')
           ),
           isSelf&&h('span',{className:'muted',style:{fontSize:11}},'(you)')
         );
