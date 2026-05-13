@@ -89,7 +89,6 @@ window.GH_CONFIG = {
   // UPI payment — leave blank to disable UPI link on bills
   upiId:     "9503019681-3@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
   hotelName: "Gavthan"               // shown in customer's UPI app
-};
 // Emails that get Admin access — everyone else is Staff
 window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com"];
 </script>
@@ -266,28 +265,50 @@ function LoginScreen(props){
       })
         .then(function(r){
           if(r.error)throw new Error(r.error.message);
-          // ALWAYS show confirmation — promise chain completes, button stops spinning
+          // Duplicate email detection: when email already registered, Supabase returns user
+          // with empty identities array (silent resend of confirmation, no real account creation)
+          var u=r.data&&r.data.user;
+          if(u&&Array.isArray(u.identities)&&u.identities.length===0){
+            setErr('This email is already registered. Please go to Login. If you forgot your password, use "Forgot password?" link.');
+            setBusy(false);
+            return;
+          }
           setBusy(false);
           setErr('');
           setConfirmMsg('✓ Account created! Please check your email ('+email.trim()+') for the confirmation link. After confirming, come back here and login.');
-          // If auto-confirm mode (session exists), also insert mh_users record now
-          if(r.data&&r.data.session&&r.data.user){
+          if(r.data&&r.data.session&&u){
             return supa.from('mh_users').insert({
-              id:r.data.user.id,email:email.trim(),display_name:name.trim(),
+              id:u.id,email:email.trim(),display_name:name.trim(),
               role:role,active:true
             });
           }
         })
         .catch(function(e){
           var m=e.message||'';
-          if(m.toLowerCase().indexOf('rate limit')!==-1){
-            setErr('Email rate limit reached (Supabase free tier allows ~4 signups/hour). Either wait 1 hour, or disable email confirmation: Supabase Dashboard → Authentication → Sign In / Providers → Email → toggle off "Confirm email".');
+          var lc=m.toLowerCase();
+          if(lc.indexOf('rate limit')!==-1){
+            setErr('Email rate limit reached (Supabase free tier ~4/hour). Wait 1 hour OR disable email confirmation: Supabase → Authentication → Sign In / Providers → Email → toggle off "Confirm email".');
+          } else if(lc.indexOf('invalid')!==-1&&lc.indexOf('email')!==-1){
+            setErr('Email rejected by Supabase. Try a real provider (Gmail, Outlook, etc.) — disposable email domains are often blocked.');
+          } else if(lc.indexOf('already registered')!==-1||lc.indexOf('already been registered')!==-1){
+            setErr('This email is already registered. Please Login or use Forgot password.');
           } else {
             setErr(m);
           }
           setBusy(false);
         });
     }
+  }
+
+  function doForgot(){
+    var em=(email.trim()||prompt('Enter your registered email:')||'').trim();
+    if(!em)return;
+    setBusy(true);setErr('');setConfirmMsg('');
+    supa.auth.resetPasswordForEmail(em).then(function(r){
+      setBusy(false);
+      if(r&&r.error){setErr('Error: '+r.error.message);return;}
+      setConfirmMsg('✓ Password reset email sent to '+em+'. Check your inbox for the reset link.');
+    }).catch(function(e){setBusy(false);setErr(e.message);});
   }
   function onKey(e){if(e.key==='Enter')doAuth();}
 
@@ -309,8 +330,11 @@ function LoginScreen(props){
               h('input',{type:'email',value:email,onChange:function(e){setEmail(e.target.value);},placeholder:'you@example.com',onKeyDown:onKey})),
             h('div',{className:'fld',style:{marginBottom:16}},h('label',null,'Password'),
               h('input',{type:'password',value:pass,onChange:function(e){setPass(e.target.value);},placeholder:'Min 6 characters',onKeyDown:onKey})),
-            h('button',{className:'btn btn-a',style:{width:'100%',justifyContent:'center',marginBottom:12},onClick:doAuth,disabled:busy},
+            h('button',{className:'btn btn-a',style:{width:'100%',justifyContent:'center',marginBottom:8},onClick:doAuth,disabled:busy},
               busy&&h('span',{className:'spin'}),mode==='login'?'Login':'Register'),
+            mode==='login'&&h('div',{style:{textAlign:'center',fontSize:11,marginBottom:10}},
+              h('span',{style:{color:'#B45309',cursor:'pointer',fontWeight:600},onClick:doForgot},'Forgot password?')
+            ),
             h('div',{style:{textAlign:'center',fontSize:12,color:'#6b6b67'}},
               mode==='login'
                 ?h('span',null,'New staff? ',h('span',{style:{color:'#B45309',cursor:'pointer',fontWeight:700},onClick:function(){setMode('register');setErr('');setConfirmMsg('');}}, 'Register'))
@@ -324,6 +348,7 @@ function LoginScreen(props){
 // ── MAIN APP ───────────────────────────────────────
 function App(props){
   var user=props.user;
+  // Dynamic admin check: prefer DB role (mh_users.role), fallback to GH_ADMINS for bootstrap
   var admin=isAdminEmail(user.email);
   var _tab=useState('orders');var tab=_tab[0];var setTab=_tab[1];
   var _cats=useState(INIT_CATS);var cats=_cats[0];var setCats=_cats[1];
@@ -488,6 +513,10 @@ function App(props){
   var todaySett=settled.filter(function(c){return c.settled_at&&new Date(c.settled_at).toDateString()===new Date().toDateString();});
   var todayRev=todaySett.reduce(function(s,c){return s+tot(c.items);},0);
   var billCust=billId?custs.find(function(c){return c.id===billId;}):null;
+  // Dynamic admin: DB role takes precedence over hardcoded list
+  if(myUser&&myUser.role==='admin') admin=true;
+  if(myUser&&myUser.role==='user') admin=false;
+
   var displayName=initCap(
     (myUser&&myUser.display_name) ||
     (user.user_metadata&&user.user_metadata.display_name) ||
@@ -516,7 +545,7 @@ function App(props){
       appErr&&h('div',{style:{background:'#FEF2F2',color:'#991B1B',border:'1px solid #FECACA',borderRadius:8,padding:'10px 12px',marginBottom:8,fontSize:12,lineHeight:1.7},onClick:function(){setAppErr('');}},
         h('strong',null,'⚠️ Error — '),appErr,h('span',{style:{float:'right',cursor:'pointer',fontWeight:700}},'✕')),
       tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr}),
-      tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs)}),
+      tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
       tab==='users'   &&admin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset})
@@ -603,12 +632,45 @@ function OrderPanel(props){
 
 // ── NEW CUSTOMER TAB ───────────────────────────────
 function NewTab(props){
-  var addCust=props.addCust,todayCnt=props.todayCnt;
+  var addCust=props.addCust,todayCnt=props.todayCnt,allCusts=props.allCusts||[];
   var _name=useState('Cust '+(todayCnt+1));var name=_name[0];var setName=_name[1];
   var _room=useState('');var room=_room[0];var setRoom=_room[1];
   var _phone=useState('');var phone=_phone[0];var setPhone=_phone[1];
   var _msg=useState('');var msg=_msg[0];var setMsg=_msg[1];
+  var _search=useState('');var search=_search[0];var setSearch=_search[1];
   useEffect(function(){setName('Cust '+(todayCnt+1));},[todayCnt]);
+
+  // Deduplicate past customers by name+phone
+  var pastCustomers=[];var seen={};
+  allCusts.forEach(function(c){
+    var k=(c.name||'').toLowerCase()+'|'+(c.phone||'');
+    if(!seen[k]&&c.name&&c.name.indexOf('Cust ')!==0){seen[k]=true;pastCustomers.push(c);}
+  });
+  var matches=search.trim().length>=2?pastCustomers.filter(function(c){
+    var q=search.toLowerCase();
+    return (c.name||'').toLowerCase().indexOf(q)!==-1||(c.phone||'').indexOf(q)!==-1;
+  }).slice(0,5):[];
+
+  function pickCustomer(c){
+    setName(c.name);setPhone(c.phone||'');setSearch('');
+    setMsg('✓ Loaded repeat customer. Enter room number to continue.');
+    setTimeout(function(){setMsg('');},3000);
+  }
+
+  function pickFromContacts(){
+    if(!navigator.contacts||!navigator.contacts.select){
+      alert('Contact picker not supported on this device. Use Chrome on Android for this feature, or enter the number manually.');
+      return;
+    }
+    navigator.contacts.select(['name','tel'],{multiple:false}).then(function(cs){
+      if(!cs||cs.length===0)return;
+      var c=cs[0];
+      var tel=c.tel&&c.tel[0]&&c.tel[0].replace(/\D/g,'');
+      if(tel){setPhone(tel.slice(-10));}
+      if(c.name&&c.name[0]&&(name.indexOf('Cust ')===0)){setName(c.name[0]);}
+    }).catch(function(e){alert('Contact picker error: '+e.message);});
+  }
+
   function submit(){
     if(!name.trim()||!room.trim()){setMsg('Name and room required.');return;}
     var ph=phone.trim().replace(/\D/g,'');
@@ -619,17 +681,47 @@ function NewTab(props){
     setRoom('');setPhone('');setMsg('Customer added!');
     setTimeout(function(){setMsg('');},3000);
   }
-  return h('div',{className:'card'},
-    h('div',{className:'ttl'},'New Customer'),
-    h('div',{className:'muted',style:{fontSize:11,marginBottom:10}},"Today's customers: "+todayCnt),
-    [['Name *','Customer name',name,setName],['Room / Table *','Room 5 or Table 3',room,setRoom],['Phone','Optional',phone,setPhone]].map(function(f){
-      return h('div',{key:f[0],style:{marginBottom:8}},
-        h('div',{className:'muted',style:{fontSize:11,marginBottom:3}},f[0]),
-        h('input',{value:f[2],onChange:function(e){f[3](e.target.value);},placeholder:f[1],onKeyDown:function(e){if(e.key==='Enter')submit();}})
-      );
-    }),
-    h('button',{className:'btn btn-a',style:{width:'100%',marginTop:4,justifyContent:'center'},onClick:submit},'Add Customer'),
-    msg&&h('div',{style:{marginTop:6,fontSize:12,color:msg.indexOf('!')!==-1?'#166534':'#991B1B',textAlign:'center'}},msg)
+
+  var hasContacts=!!(navigator.contacts&&navigator.contacts.select);
+
+  return h('div',null,
+    // Repeat-customer search card
+    pastCustomers.length>0&&h('div',{className:'card'},
+      h('div',{className:'ttl'},'Repeat Customer?'),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:6}},'Search by name or phone — fills the form automatically.'),
+      h('input',{placeholder:'Type name or phone (min 2 chars)…',value:search,onChange:function(e){setSearch(e.target.value);}}),
+      matches.length>0&&h('div',{style:{marginTop:6,maxHeight:160,overflowY:'auto',border:'1px solid #e0ddd6',borderRadius:6}},
+        matches.map(function(c){
+          return h('div',{key:c.id,style:{padding:'6px 10px',borderBottom:'1px solid #f0ede8',cursor:'pointer',fontSize:12},onClick:function(){pickCustomer(c);}},
+            h('div',{style:{fontWeight:700}},c.name),
+            h('div',{className:'muted',style:{fontSize:10}},(c.phone||'no phone')+' · last visit '+fmtDT(c.date))
+          );
+        })
+      ),
+      search.length>=2&&matches.length===0&&h('div',{className:'muted',style:{fontSize:11,marginTop:6}},'No matches.')
+    ),
+    h('div',{className:'card'},
+      h('div',{className:'ttl'},'New Customer'),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:10}},"Today's customers: "+todayCnt),
+      h('div',{style:{marginBottom:8}},
+        h('div',{className:'muted',style:{fontSize:11,marginBottom:3}},'Name *'),
+        h('input',{value:name,onChange:function(e){setName(e.target.value);},placeholder:'Customer name',onKeyDown:function(e){if(e.key==='Enter')submit();}})
+      ),
+      h('div',{style:{marginBottom:8}},
+        h('div',{className:'muted',style:{fontSize:11,marginBottom:3}},'Room / Table *'),
+        h('input',{value:room,onChange:function(e){setRoom(e.target.value);},placeholder:'Room 5 or Table 3',onKeyDown:function(e){if(e.key==='Enter')submit();}})
+      ),
+      h('div',{style:{marginBottom:8}},
+        h('div',{className:'muted',style:{fontSize:11,marginBottom:3}},'Phone (optional)'),
+        h('div',{className:'row',style:{gap:4}},
+          h('input',{value:phone,onChange:function(e){setPhone(e.target.value);},placeholder:'10 digits',onKeyDown:function(e){if(e.key==='Enter')submit();},style:{flex:1}}),
+          hasContacts&&h('button',{className:'btn xs',style:{flexShrink:0},onClick:pickFromContacts,title:'Pick from device contacts (Chrome Android only)'},'📇')
+        ),
+        !hasContacts&&h('div',{className:'muted',style:{fontSize:10,marginTop:2}},'Tip: Use Chrome on Android to pick from contacts.')
+      ),
+      h('button',{className:'btn btn-a',style:{width:'100%',marginTop:4,justifyContent:'center'},onClick:submit},'Add Customer'),
+      msg&&h('div',{style:{marginTop:6,fontSize:12,color:msg.indexOf('!')!==-1||msg.indexOf('✓')!==-1?'#166534':'#991B1B',textAlign:'center'}},msg)
+    )
   );
 }
 
@@ -919,12 +1011,13 @@ function BillModal(props){
     lines.push('────────────────────');
     lines.push('*TOTAL: ₹'+t+'*');
     if(UPI_ID){
+      var upiLink='upi://pay?pa='+UPI_ID+'&pn='+encodeURIComponent(HOTEL_NAME)+'&am='+t+'&cu=INR&tn='+encodeURIComponent(HOTEL_NAME);
       lines.push('');
-      lines.push('*Pay via UPI — tap the link below:*');
-      var note='Bill-'+cust.name.replace(/[^a-zA-Z0-9 ]/g,'')+'-Room'+cust.room.replace(/[^a-zA-Z0-9 ]/g,'');
-      var upiLink='upi://pay?pa='+UPI_ID+'&pn='+encodeURIComponent(HOTEL_NAME)+'&am='+t+'&cu=INR&tn='+encodeURIComponent(note);
+      lines.push('────────────────────');
+      lines.push('💳 *PAY ₹'+t+' INSTANTLY*');
+      lines.push('Tap below to pay via GPay/PhonePe/Paytm:');
       lines.push(upiLink);
-      lines.push('(Opens GPay/PhonePe/Paytm with ₹'+t+' pre-filled)');
+      lines.push('────────────────────');
     }
     lines.push('');
     lines.push('Thank you for visiting Gavthan!');
