@@ -102,6 +102,7 @@ var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
 var SUPABASE_KEY    = (window.GH_CONFIG||{}).supabaseKey  || '';
 var UPI_ID          = (window.GH_CONFIG||{}).upiId        || '';
 var HOTEL_NAME      = (window.GH_CONFIG||{}).hotelName    || 'Gavthan';
+var PARTNER_DISCOUNT= Number((window.GH_CONFIG||{}).partnerDiscount)||0;
 var ADMIN_EMAILS    = ((window.GH_ADMINS)||[]).map(function(e){return e.toLowerCase();});
 var INIT_CATS = ['Breakfast','Veg','Non-Veg','Bhakri','Chapati','Cold Drinks','Water Bottle','Glasses'];
 var PALETTE   = [['#FAEEDA','#412402'],['#EAF3DE','#27500A'],['#FAECE7','#4A1B0C'],['#E6F1FB','#042C53'],['#EEEDFE','#26215C'],['#E1F5EE','#04342C'],['#FBEAF0','#4B1528'],['#FAE8E0','#3B1005']];
@@ -145,6 +146,16 @@ var useRef    = React.useRef;
 
 // ── HELPERS ────────────────────────────────────────
 function tot(items){return items.reduce(function(s,i){return s+i.price*i.qty;},0);}
+// Subtotal with partner discount applied
+function subTotal(cust){
+  var s=tot(cust.items||[]);
+  if(cust.is_partner&&PARTNER_DISCOUNT>0) s=Math.round(s*(1-PARTNER_DISCOUNT/100));
+  return s;
+}
+// Grand total = discounted subtotal + adjustment
+function finalTotal(cust){
+  return subTotal(cust)+(Number(cust.adjustment)||0);
+}
 function clr(cat,cats){var i=cats.indexOf(cat);var p=PALETTE[(i<0?0:i)%PALETTE.length];return{bg:p[0],tx:p[1]};}
 function todayStr(){return new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'});}
 function timeStr(){return new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}
@@ -225,90 +236,44 @@ function LoginScreen(props){
 
   function doAuth(){
     if(!email.trim()||!pass){setErr('Email and password required.');return;}
-    if(mode==='register'&&!name.trim()){setErr('Name required.');return;}
-    if(mode==='register'&&pass.length<6){setErr('Password min 6 characters.');return;}
     setBusy(true);setErr('');setConfirmMsg('');
-    if(mode==='login'){
-      supa.auth.signInWithPassword({email:email.trim(),password:pass})
-        .then(function(r){
-          if(r.error){
-            if(r.error.message.toLowerCase().indexOf('email')!==-1&&r.error.message.toLowerCase().indexOf('confirm')!==-1){
-              setErr('Please confirm your email first. Check your inbox for the confirmation link.');
-            } else {
-              setErr(r.error.message);
-            }
-            setBusy(false);return;
-          }
-          var u=r.data.user;
-          return supa.from('mh_users').select('*').eq('id',u.id).maybeSingle()
-            .then(function(rr){
-              if(rr.error) throw new Error(rr.error.message);
-              if(!rr.data){
-                // First-time login — auto-create mh_users record (pending unless bootstrap admin)
-                var role=isAdminEmail(u.email)?'admin':'user';
-                var dn=(u.user_metadata&&u.user_metadata.display_name)||u.email.split('@')[0];
-                return supa.from('mh_users').insert({id:u.id,email:u.email,display_name:dn,role:role,active:isAdminEmail(u.email)})
-                  .then(function(){
-                    if(!isAdminEmail(u.email)){
-                      supa.auth.signOut();
-                      setErr('Account created — awaiting admin approval. You will be able to login once approved.');
-                      setBusy(false);
-                    }
-                  });
-              }
-              if(rr.data.active===false){
-                supa.auth.signOut();
-                setErr(rr.data.role==='deleted'
-                  ?'Your account has been removed. Contact admin.'
-                  :'Account awaiting admin approval. Please try again later.');
-                setBusy(false);
-              }
-            });
-        })
-        .catch(function(e){setErr(e.message);setBusy(false);});
-    } else {
-      var role=isAdminEmail(email.trim())?'admin':'user';
-      supa.auth.signUp({
-        email:email.trim(),
-        password:pass,
-        options:{data:{display_name:name.trim()}}
-      })
-        .then(function(r){
-          if(r.error)throw new Error(r.error.message);
-          // Duplicate email detection: when email already registered, Supabase returns user
-          // with empty identities array (silent resend of confirmation, no real account creation)
-          var u=r.data&&r.data.user;
-          if(u&&Array.isArray(u.identities)&&u.identities.length===0){
-            setErr('This email is already registered. Please go to Login. If you forgot your password, use "Forgot password?" link.');
-            setBusy(false);
-            return;
-          }
-          setBusy(false);
-          setErr('');
-          setConfirmMsg('✓ Account created! Please check your email ('+email.trim()+') for the confirmation link. After confirming, come back here and login.');
-          if(r.data&&r.data.session&&u){
-            // Bootstrap admins (in GH_ADMINS) auto-approved; everyone else pending
-            return supa.from('mh_users').insert({
-              id:u.id,email:email.trim(),display_name:name.trim(),
-              role:role,active:isAdminEmail(email.trim())
-            });
-          }
-        })
-        .catch(function(e){
-          var m=e.message||'';
-          var lc=m.toLowerCase();
-          if(lc.indexOf('rate limit')!==-1){
-            setErr('Email rate limit reached (Supabase free tier ~4/hour). Wait 1 hour OR disable email confirmation: Supabase → Authentication → Sign In / Providers → Email → toggle off "Confirm email".');
-          } else if(lc.indexOf('invalid')!==-1&&lc.indexOf('email')!==-1){
-            setErr('Email rejected by Supabase. Try a real provider (Gmail, Outlook, etc.) — disposable email domains are often blocked.');
-          } else if(lc.indexOf('already registered')!==-1||lc.indexOf('already been registered')!==-1){
-            setErr('This email is already registered. Please Login or use Forgot password.');
+    supa.auth.signInWithPassword({email:email.trim(),password:pass})
+      .then(function(r){
+        if(r.error){
+          if(r.error.message.toLowerCase().indexOf('email')!==-1&&r.error.message.toLowerCase().indexOf('confirm')!==-1){
+            setErr('Please confirm your email first. Check your inbox for the confirmation link.');
           } else {
-            setErr(m);
+            setErr(r.error.message);
           }
-          setBusy(false);
-        });
-    }
+          setBusy(false);return;
+        }
+        var u=r.data.user;
+        return supa.from('mh_users').select('*').eq('id',u.id).maybeSingle()
+          .then(function(rr){
+            if(rr.error) throw new Error(rr.error.message);
+            if(!rr.data){
+              // First-time login — auto-create mh_users record (pending unless bootstrap admin)
+              var role=isAdminEmail(u.email)?'admin':'user';
+              var dn=(u.user_metadata&&u.user_metadata.display_name)||u.email.split('@')[0];
+              return supa.from('mh_users').insert({id:u.id,email:u.email,display_name:dn,role:role,active:isAdminEmail(u.email)})
+                .then(function(){
+                  if(!isAdminEmail(u.email)){
+                    supa.auth.signOut();
+                    setErr('Account created — awaiting admin approval. You will be able to login once approved.');
+                    setBusy(false);
+                  }
+                });
+            }
+            if(rr.data.active===false){
+              supa.auth.signOut();
+              setErr(rr.data.role==='deleted'
+                ?'Your account has been removed. Contact admin.'
+                :'Account awaiting admin approval. Please try again later.');
+              setBusy(false);
+            }
+          });
+      })
+      .catch(function(e){setErr(e.message);setBusy(false);});
   }
 
   function doForgot(){
@@ -326,30 +291,26 @@ function LoginScreen(props){
   return h('div',{className:'login-wrap'},
     h('div',{className:'login-box'},
       h('div',{className:'login-logo'},h('em',null,'Gavthan')),
-      h('div',{className:'login-sub'},mode==='login'?'Staff Login':'Create Account'),
+      h('div',{className:'login-sub'},'Staff Login'),
       confirmMsg
         ? h('div',null,
             h('div',{className:'msg-ok',style:{lineHeight:1.7}},confirmMsg),
             h('button',{className:'btn btn-a',style:{width:'100%',justifyContent:'center',marginTop:8},
-              onClick:function(){setConfirmMsg('');setMode('login');}},'Go to Login')
+              onClick:function(){setConfirmMsg('');}},'Back to Login')
           )
         : h('div',null,
             err&&h('div',{className:'msg-err'},err),
-            mode==='register'&&h('div',{className:'fld'},h('label',null,'Your Name'),
-              h('input',{value:name,onChange:function(e){setName(e.target.value);},placeholder:'Full name',onKeyDown:onKey})),
             h('div',{className:'fld'},h('label',null,'Email'),
               h('input',{type:'email',value:email,onChange:function(e){setEmail(e.target.value);},placeholder:'you@example.com',onKeyDown:onKey})),
             h('div',{className:'fld',style:{marginBottom:16}},h('label',null,'Password'),
-              h('input',{type:'password',value:pass,onChange:function(e){setPass(e.target.value);},placeholder:'Min 6 characters',onKeyDown:onKey})),
+              h('input',{type:'password',value:pass,onChange:function(e){setPass(e.target.value);},placeholder:'Your password',onKeyDown:onKey})),
             h('button',{className:'btn btn-a',style:{width:'100%',justifyContent:'center',marginBottom:8},onClick:doAuth,disabled:busy},
-              busy&&h('span',{className:'spin'}),mode==='login'?'Login':'Register'),
-            mode==='login'&&h('div',{style:{textAlign:'center',fontSize:11,marginBottom:10}},
+              busy&&h('span',{className:'spin'}),'Login'),
+            h('div',{style:{textAlign:'center',fontSize:11,marginBottom:6}},
               h('span',{style:{color:'#B45309',cursor:'pointer',fontWeight:600},onClick:doForgot},'Forgot password?')
             ),
-            h('div',{style:{textAlign:'center',fontSize:12,color:'#6b6b67'}},
-              mode==='login'
-                ?h('span',null,'New staff? ',h('span',{style:{color:'#B45309',cursor:'pointer',fontWeight:700},onClick:function(){setMode('register');setErr('');setConfirmMsg('');}}, 'Register'))
-                :h('span',null,'Have account? ',h('span',{style:{color:'#B45309',cursor:'pointer',fontWeight:700},onClick:function(){setMode('login');setErr('');setConfirmMsg('');}}, 'Login'))
+            h('div',{style:{textAlign:'center',fontSize:11,color:'#6b6b67'}},
+              'No account? Ask your admin to create one for you.'
             )
           )
     )
@@ -447,7 +408,7 @@ function App(props){
     var cust=custs.find(function(c){return c.id===cid;});
     if(!cust)return;
     if(!admin&&cust.added_by!==user.email){alert('You can only settle your own orders. Ask an admin.');return;}
-    if(tot(cust.items)===0){alert('Cannot settle zero-amount bill. Add items first.');return;}
+    if(finalTotal(cust)===0){alert('Cannot settle zero-amount bill. Add items first.');return;}
     if(!confirm('Settle this customer?'))return;
     var now=new Date().toISOString();
     supa.from('mh_customers').update({status:'settled',settled_at:now}).eq('id',cid)
@@ -464,6 +425,19 @@ function App(props){
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
       .then(function(){if(selId===cid)setSelId(null);})
       .catch(showErr);
+  }
+  function setPartner(cid,val){
+    setCusts(function(p){return p.map(function(c){return c.id===cid?Object.assign({},c,{is_partner:val}):c;});});
+    supa.from('mh_customers').update({is_partner:val}).eq('id',cid)
+      .then(function(r){if(r.error)throw new Error(sbErr(r.error));})
+      .catch(function(e){showErr(e);fetchAll();});
+  }
+  function setAdjustment(cid,amt){
+    var n=Number(amt)||0;
+    setCusts(function(p){return p.map(function(c){return c.id===cid?Object.assign({},c,{adjustment:n}):c;});});
+    supa.from('mh_customers').update({adjustment:n}).eq('id',cid)
+      .then(function(r){if(r.error)throw new Error(sbErr(r.error));})
+      .catch(function(e){showErr(e);fetchAll();});
   }
 
   // ── Menu ops ──
@@ -544,7 +518,7 @@ function App(props){
     : custs.filter(function(c){return c.status==='active'&&c.added_by===user.email;});
   var settled=custs.filter(function(c){return c.status==='settled';});
   var todaySett=settled.filter(function(c){return c.settled_at&&new Date(c.settled_at).toDateString()===new Date().toDateString();});
-  var todayRev=todaySett.reduce(function(s,c){return s+tot(c.items);},0);
+  var todayRev=todaySett.reduce(function(s,c){return s+finalTotal(c);},0);
   var billCust=billId?custs.find(function(c){return c.id===billId;}):null;
   // Dynamic admin: DB role takes precedence over hardcoded list
   if(myUser&&myUser.role==='admin') admin=true;
@@ -577,7 +551,7 @@ function App(props){
     h('div',{className:'body'},
       appErr&&h('div',{style:{background:'#FEF2F2',color:'#991B1B',border:'1px solid #FECACA',borderRadius:8,padding:'10px 12px',marginBottom:8,fontSize:12,lineHeight:1.7},onClick:function(){setAppErr('');}},
         h('strong',null,'⚠️ Error — '),appErr,h('span',{style:{float:'right',cursor:'pointer',fontWeight:700}},'✕')),
-      tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr}),
+      tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setPartner,setAdjustment}),
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
@@ -607,9 +581,9 @@ function OrdersTab(props){
       return h('div',{key:c.id,className:'ccard'+(c.id===selId?' sel':''),onClick:function(){setSelId(c.id===selId?null:c.id);}},
         h('div',{className:'row bw'},
           h('div',null,h('div',{style:{fontWeight:700}},c.name),h('div',{className:'muted',style:{fontSize:11}},c.room+(c.phone?' · '+c.phone:''))),
-          h('div',{style:{textAlign:'right'}},h('div',{style:{fontWeight:700,color:'#B45309'}},'₹'+tot(c.items)),h('div',{className:'muted',style:{fontSize:10}},fmtDT(c.date)))
+          h('div',{style:{textAlign:'right'}},h('div',{style:{fontWeight:700,color:'#B45309'}},'₹'+finalTotal(c)),h('div',{className:'muted',style:{fontSize:10}},fmtDT(c.date)))
         ),
-        c.id===selId&&h(OrderPanel,{cust:c,menu,cats,upsertItem,settle,delCust,setBillId})
+        c.id===selId&&h(OrderPanel,{cust:c,menu,cats,upsertItem,settle,delCust,setBillId,setPartner:props.setPartner,setAdjustment:props.setAdjustment})
       );
     })
   );
@@ -618,10 +592,14 @@ function OrdersTab(props){
 function OrderPanel(props){
   var cust=props.cust,menu=props.menu,cats=props.cats,upsertItem=props.upsertItem;
   var settle=props.settle,delCust=props.delCust,setBillId=props.setBillId;
+  var setPartner=props.setPartner,setAdjustment=props.setAdjustment;
   var _cat=useState(cats[0]||'');var cat=_cat[0];var setCat=_cat[1];
   var _q=useState('');var q=_q[0];var setQ=_q[1];
+  var _adj=useState(String(cust.adjustment||''));var adj=_adj[0];var setAdj=_adj[1];
   var filtered=menu.filter(function(m){return m.cat===cat&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
-  var t=tot(cust.items);
+  var raw=tot(cust.items);
+  var sub=subTotal(cust);
+  var grand=finalTotal(cust);
   return h('div',{onClick:function(e){e.stopPropagation();}},
     h('div',{className:'hr'}),
     cust.items.length>0&&h('div',null,
@@ -635,11 +613,38 @@ function OrderPanel(props){
           h('span',{style:{minWidth:44,textAlign:'right',fontWeight:700}},'₹'+(it.price*it.qty))
         );
       })),
-      h('div',{className:'row bw',style:{paddingTop:5,fontWeight:700}},
-        h('span',null,'Total'),
-        h('span',{style:{color:t===0?'#991B1B':'#B45309'}},'₹'+t,t===0&&h('span',{style:{fontSize:10,fontWeight:400,marginLeft:4}},'(add items to settle)'))
+      // Subtotal / partner discount / adjustment breakdown
+      h('div',{style:{paddingTop:5,fontSize:12}},
+        h('div',{className:'row bw'},h('span',{className:'muted'},'Items subtotal'),h('span',null,'₹'+raw)),
+        cust.is_partner&&PARTNER_DISCOUNT>0&&h('div',{className:'row bw',style:{color:'#166534'}},
+          h('span',null,'Partner discount ('+PARTNER_DISCOUNT+'%)'),h('span',null,'-₹'+(raw-sub))
+        ),
+        (Number(cust.adjustment)||0)!==0&&h('div',{className:'row bw',style:{color:(Number(cust.adjustment)<0?'#166534':'#991B1B')}},
+          h('span',null,'Adjustment (Adj)'),h('span',null,(Number(cust.adjustment)>0?'+':'')+'₹'+Number(cust.adjustment))
+        ),
+        h('div',{className:'row bw',style:{fontWeight:700,fontSize:14,paddingTop:3,borderTop:'1px solid #e0ddd6',marginTop:3}},
+          h('span',null,'Total'),
+          h('span',{style:{color:grand===0?'#991B1B':'#B45309'}},'₹'+grand)
+        )
       )
     ),
+    h('div',{className:'hr'}),
+    // Partner checkbox + adjustment input
+    h('div',{className:'row bw',style:{marginBottom:6,gap:8,flexWrap:'wrap'}},
+      h('label',{className:'row',style:{gap:5,cursor:'pointer',fontSize:12}},
+        h('input',{type:'checkbox',checked:!!cust.is_partner,style:{width:'auto'},
+          onChange:function(e){setPartner(cust.id,e.target.checked);}}),
+        h('span',null,'Partner billing'+(PARTNER_DISCOUNT>0?' ('+PARTNER_DISCOUNT+'% off)':''))
+      ),
+      h('div',{className:'row',style:{gap:4}},
+        h('span',{className:'muted',style:{fontSize:12}},'Adj ₹'),
+        h('input',{type:'number',value:adj,placeholder:'0',style:{width:70},
+          onChange:function(e){setAdj(e.target.value);},
+          onBlur:function(){setAdjustment(cust.id,adj);},
+          onKeyDown:function(e){if(e.key==='Enter')setAdjustment(cust.id,adj);}})
+      )
+    ),
+    h('div',{className:'muted',style:{fontSize:10,marginBottom:6}},'Adj: enter + amount for extra charge, - amount for discount.'),
     h('div',{className:'hr'}),
     h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
     h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',onClick:function(){setCat(c);}},c);})),
@@ -769,7 +774,7 @@ function HistoryTab(props){
     var todayStr2=new Date().toDateString();
     var mine=settled.filter(function(c){return c.added_by===userEmail&&c.settled_at&&new Date(c.settled_at).toDateString()===todayStr2;})
       .sort(function(a,b){return new Date(b.settled_at)-new Date(a.settled_at);});
-    var myRev=mine.reduce(function(s,c){return s+tot(c.items);},0);
+    var myRev=mine.reduce(function(s,c){return s+finalTotal(c);},0);
     return h('div',null,
       h('div',{className:'metrics'},
         h('div',{className:'met'},h('div',{className:'ml'},'My Revenue Today'),h('div',{className:'mv'},'₹'+myRev)),
@@ -781,7 +786,7 @@ function HistoryTab(props){
         h('div',{className:'muted',style:{fontSize:11,marginBottom:8}},'Your settled orders from today only.'),
         mine.length===0?h('div',{className:'empty'},'No settled orders yet today.'):
         mine.map(function(c){
-          var t=tot(c.items);
+          var t=finalTotal(c);
           return h('div',{key:c.id,className:'li',style:{flexDirection:'column',alignItems:'stretch',gap:3,paddingBottom:6}},
             h('div',{className:'row bw'},
               h('span',{style:{fontWeight:700}},c.name+' · '+c.room),
@@ -806,7 +811,7 @@ function HistoryTab(props){
   var _ss=useState('all');var selStaff=_ss[0];var setSelStaff=_ss[1];
   var _page=useState(0);var page=_page[0];var setPage=_page[1];
   var PAGE_SIZE=10;
-  var allRev=settled.reduce(function(s,c){return s+tot(c.items);},0);
+  var allRev=settled.reduce(function(s,c){return s+finalTotal(c);},0);
   var staffList=users.filter(function(u){return u.active!==false;});
   var shown=settled.filter(function(c){
     if(selStaff!=='all'&&(c.added_by||'')!==selStaff)return false;
@@ -818,7 +823,7 @@ function HistoryTab(props){
     else if(filterMode==='year'){if(String(dt.getFullYear())!==selYear)return false;}
     return true;
   }).sort(function(a,b){return new Date(b.settled_at||b.date)-new Date(a.settled_at||a.date);});
-  var shownRev=shown.reduce(function(s,c){return s+tot(c.items);},0);
+  var shownRev=shown.reduce(function(s,c){return s+finalTotal(c);},0);
   var totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
   var safePage=Math.min(page,totalPages-1);
   var pageItems=shown.slice(safePage*PAGE_SIZE,(safePage+1)*PAGE_SIZE);
@@ -894,7 +899,7 @@ function HistoryTab(props){
       ),
       shown.length===0?h('div',{className:'empty'},'No records found.'):
       pageItems.map(function(c){
-        var t=tot(c.items);
+        var t=finalTotal(c);
         var su=staffList.find(function(u){return u.email===c.added_by;});
         var sn=initCap(su?(su.display_name||su.email.split('@')[0]):(c.added_by||''));
         return h('div',{key:c.id,className:'li',style:{flexDirection:'column',alignItems:'stretch',gap:3,paddingBottom:6}},
@@ -1153,7 +1158,7 @@ function UsersTab(props){
 // ── BILL MODAL ─────────────────────────────────────
 function BillModal(props){
   var cust=props.cust,onClose=props.onClose,onSavePhone=props.onSavePhone;
-  var t=tot(cust.items);
+  var t=finalTotal(cust);
 
   function pad(s,n){s=String(s);while(s.length<n)s+=' ';return s;}
   function padL(s,n){s=String(s);while(s.length<n)s=' '+s;return s;}
@@ -1178,6 +1183,16 @@ function BillModal(props){
       lines.push(pad(nm,17)+padL(i.qty,3)+'  '+padL('Rs'+i.price,6)+'  '+padL('Rs'+(i.price*i.qty),6));
     });
     lines.push('----------------------------------');
+    var raw=tot(cust.items);
+    var sub=subTotal(cust);
+    var adjV=Number(cust.adjustment)||0;
+    if(cust.is_partner&&PARTNER_DISCOUNT>0){
+      lines.push(pad('Subtotal',24)+padL('Rs'+raw,8));
+      lines.push(pad('Partner disc ('+PARTNER_DISCOUNT+'%)',24)+padL('-Rs'+(raw-sub),8));
+    }
+    if(adjV!==0){
+      lines.push(pad('Adjustment (Adj)',24)+padL((adjV>0?'+':'')+'Rs'+adjV,8));
+    }
     lines.push(pad('TOTAL',24)+padL('Rs'+t,8));
     lines.push('```');
     // UPI payment link (UPI VPA must NOT be URL-encoded; @ is literal)
@@ -1231,10 +1246,22 @@ function BillModal(props){
   }
   function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
-    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Bill</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr><div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
-    // Iframe-based printing — bypasses popup blockers
+    var raw=tot(cust.items);
+    var sub=subTotal(cust);
+    var adjV=Number(cust.adjustment)||0;
+    var breakdown='';
+    if(cust.is_partner&&PARTNER_DISCOUNT>0){
+      breakdown+='<div class="sl"><span>Subtotal</span><span>&#8377;'+raw+'</span></div>';
+      breakdown+='<div class="sl"><span>Partner discount ('+PARTNER_DISCOUNT+'%)</span><span>-&#8377;'+(raw-sub)+'</span></div>';
+    }
+    if(adjV!==0){
+      breakdown+='<div class="sl"><span>Adjustment (Adj)</span><span>'+(adjV>0?'+':'')+'&#8377;'+adjV+'</span></div>';
+    }
+    // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
+    var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+(cust.is_partner?'<div class="inf"><span><b>PARTNER BILLING</b></span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
     var iframe=document.createElement('iframe');
     iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
     document.body.appendChild(iframe);
@@ -1265,6 +1292,18 @@ function BillModal(props){
           h('tbody',null,cust.items.map(function(it){return h('tr',{key:it.id},h('td',{style:{padding:'4px 0'}},it.name),h('td',{style:{textAlign:'right',padding:'4px 0'}},it.qty),h('td',{style:{textAlign:'right',padding:'4px 0'}},'₹'+it.price),h('td',{style:{textAlign:'right',padding:'4px 0',fontWeight:700}},'₹'+(it.price*it.qty)));}))
         ),
         h('div',{className:'hr'}),
+        (function(){
+          var raw=tot(cust.items),sub=subTotal(cust),adjV=Number(cust.adjustment)||0;
+          var rowsB=[];
+          if(cust.is_partner&&PARTNER_DISCOUNT>0){
+            rowsB.push(h('div',{key:'s',style:{display:'flex',justifyContent:'space-between',fontSize:12}},h('span',{style:{color:'#6b6b67'}},'Subtotal'),h('span',null,'₹'+raw)));
+            rowsB.push(h('div',{key:'p',style:{display:'flex',justifyContent:'space-between',fontSize:12,color:'#166534'}},h('span',null,'Partner discount ('+PARTNER_DISCOUNT+'%)'),h('span',null,'-₹'+(raw-sub))));
+          }
+          if(adjV!==0){
+            rowsB.push(h('div',{key:'a',style:{display:'flex',justifyContent:'space-between',fontSize:12,color:adjV<0?'#166534':'#991B1B'}},h('span',null,'Adjustment (Adj)'),h('span',null,(adjV>0?'+':'')+'₹'+adjV)));
+          }
+          return rowsB.length?h('div',{style:{marginBottom:4}},rowsB):null;
+        })(),
         h('div',{style:{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:16}},h('span',null,'Total'),h('span',{style:{color:'#B45309'}},'₹'+t)),
         h('div',{style:{textAlign:'center',fontSize:11,color:'#6b6b67',marginTop:12}},'Thank you for visiting Gavthan!')
       )
@@ -1272,22 +1311,75 @@ function BillModal(props){
   );
 }
 
+// ── RESET PASSWORD SCREEN ──────────────────────────
+function ResetPasswordScreen(props){
+  var _p1=useState('');var p1=_p1[0];var setP1=_p1[1];
+  var _p2=useState('');var p2=_p2[0];var setP2=_p2[1];
+  var _err=useState('');var err=_err[0];var setErr=_err[1];
+  var _ok=useState(false);var ok=_ok[0];var setOk=_ok[1];
+  var _busy=useState(false);var busy=_busy[0];var setBusy=_busy[1];
+  function submit(){
+    if(p1.length<6){setErr('Password must be at least 6 characters.');return;}
+    if(p1!==p2){setErr('Passwords do not match.');return;}
+    setBusy(true);setErr('');
+    supa.auth.updateUser({password:p1}).then(function(r){
+      setBusy(false);
+      if(r.error){setErr(r.error.message);return;}
+      setOk(true);
+      supa.auth.signOut();
+    }).catch(function(e){setBusy(false);setErr(e.message);});
+  }
+  return h('div',{className:'login-wrap'},
+    h('div',{className:'login-box'},
+      h('div',{className:'login-logo'},h('em',null,'Gavthan')),
+      h('div',{className:'login-sub'},'Set New Password'),
+      ok
+        ? h('div',null,
+            h('div',{className:'msg-ok',style:{lineHeight:1.7}},'✓ Password updated successfully! Please login with your new password.'),
+            h('button',{className:'btn btn-a',style:{width:'100%',justifyContent:'center',marginTop:8},onClick:props.onDone},'Go to Login')
+          )
+        : h('div',null,
+            err&&h('div',{className:'msg-err'},err),
+            h('div',{className:'fld'},h('label',null,'New Password'),
+              h('input',{type:'password',value:p1,onChange:function(e){setP1(e.target.value);},placeholder:'Min 6 characters'})),
+            h('div',{className:'fld',style:{marginBottom:16}},h('label',null,'Confirm Password'),
+              h('input',{type:'password',value:p2,onChange:function(e){setP2(e.target.value);},placeholder:'Re-enter password',
+                onKeyDown:function(e){if(e.key==='Enter')submit();}})),
+            h('button',{className:'btn btn-a',style:{width:'100%',justifyContent:'center'},onClick:submit,disabled:busy},
+              busy&&h('span',{className:'spin'}),'Update Password')
+          )
+    )
+  );
+}
+
 // ── ROOT ───────────────────────────────────────────
 function Root(){
   var _user=useState(undefined);var user=_user[0];var setUser=_user[1];
+  var _recovery=useState(false);var recovery=_recovery[0];var setRecovery=_recovery[1];
   useEffect(function(){
     if(!isConfigured)return;
+    // Detect password recovery link (Supabase appends #type=recovery to URL)
+    if((window.location.hash||'').indexOf('type=recovery')!==-1){
+      setRecovery(true);
+    }
     var unsub=supa.auth.onAuthStateChange(function(event,session){
+      if(event==='PASSWORD_RECOVERY'){setRecovery(true);return;}
       if(session&&session.user){setUser(session.user);}
       else{setUser(null);}
     });
-    // Also check current session immediately
     supa.auth.getSession().then(function(r){
       setUser(r.data&&r.data.session?r.data.session.user:null);
     });
     return function(){unsub.data&&unsub.data.subscription&&unsub.data.subscription.unsubscribe();};
   },[]);
   if(!isConfigured)return h(SetupScreen,null);
+  if(recovery)return h(ResetPasswordScreen,{onDone:function(){
+    setRecovery(false);
+    // Clean the recovery hash from URL
+    if(window.history&&window.history.replaceState){
+      window.history.replaceState(null,'',window.location.pathname+window.location.search);
+    }
+  }});
   if(user===undefined)return h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100vh'}},h('span',{className:'spin'}));
   if(!user)return h(LoginScreen,null);
   return h(App,{user:user});
