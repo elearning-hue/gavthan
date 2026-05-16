@@ -1208,6 +1208,12 @@ function BillModal(props){
       lines.push(pad(nm,17)+padL(i.qty,3)+'  '+padL('Rs'+i.price,6)+'  '+padL('Rs'+(i.price*i.qty),6));
     });
     lines.push('----------------------------------');
+    var dA=discountAmt(cust),aA=adjustAmt(cust);
+    if(dA>0||cust.adjustment_on&&aA!==0){
+      lines.push(pad('Subtotal',24)+padL('Rs'+rawTotal(cust),8));
+      if(dA>0) lines.push(pad('Discount ('+cust.discount_pct+'%)',24)+padL('-Rs'+dA,8));
+      if(cust.adjustment_on&&aA!==0) lines.push(pad('Adjustment',24)+padL((aA>0?'+':'')+'Rs'+aA,8));
+    }
     lines.push(pad('TOTAL',24)+padL('Rs'+t,8));
     lines.push('```');
     // UPI payment link (UPI VPA must NOT be URL-encoded; @ is literal)
@@ -1263,9 +1269,16 @@ function BillModal(props){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
+    var dA=discountAmt(cust),aA=adjustAmt(cust);
+    var breakdown='';
+    if(dA>0||cust.adjustment_on&&aA!==0){
+      breakdown+='<div class="sl"><span>Subtotal</span><span>&#8377;'+rawTotal(cust)+'</span></div>';
+      if(dA>0) breakdown+='<div class="sl"><span>Discount ('+cust.discount_pct+'%)</span><span>-&#8377;'+dA+'</span></div>';
+      if(cust.adjustment_on&&aA!==0) breakdown+='<div class="sl"><span>Adjustment</span><span>'+(aA>0?'+':'')+'&#8377;'+aA+'</span></div>';
+    }
     // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
     var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
     var iframe=document.createElement('iframe');
     iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
     document.body.appendChild(iframe);
@@ -1302,6 +1315,17 @@ function BillModal(props){
           h('tbody',null,cust.items.map(function(it){return h('tr',{key:it.id},h('td',{style:{padding:'4px 0'}},it.name),h('td',{style:{textAlign:'right',padding:'4px 0'}},it.qty),h('td',{style:{textAlign:'right',padding:'4px 0'}},'₹'+it.price),h('td',{style:{textAlign:'right',padding:'4px 0',fontWeight:700}},'₹'+(it.price*it.qty)));}))
         ),
         h('div',{className:'hr'}),
+        (function(){
+          var dA=discountAmt(cust),aA=adjustAmt(cust);
+          if(!(dA>0||cust.adjustment_on&&aA!==0)) return null;
+          var rowsB=[h('div',{key:'s',style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2}},
+            h('span',{style:{color:'#6b6b67'}},'Subtotal'),h('span',null,'₹'+rawTotal(cust)))];
+          if(dA>0) rowsB.push(h('div',{key:'d',style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2,color:'#166534'}},
+            h('span',null,'Discount ('+cust.discount_pct+'%)'),h('span',null,'-₹'+dA)));
+          if(cust.adjustment_on&&aA!==0) rowsB.push(h('div',{key:'a',style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2,color:aA<0?'#166534':'#991B1B'}},
+            h('span',null,'Adjustment'),h('span',null,(aA>0?'+':'')+'₹'+aA)));
+          return h('div',{style:{marginBottom:6}},rowsB);
+        })(),
         h('div',{style:{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:16}},h('span',null,'Total'),h('span',{style:{color:'#B45309'}},'₹'+t)),
         h('div',{style:{textAlign:'center',fontSize:11,color:'#6b6b67',marginTop:12}},'Thank you for visiting Gavthan!')
       )
