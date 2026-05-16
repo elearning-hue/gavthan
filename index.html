@@ -91,7 +91,7 @@ window.GH_CONFIG = {
   hotelName: "Gavthan"               // shown in customer's UPI app
   };
 // Emails that get Admin access — everyone else is Staff
-window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com"];
+window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 </script>
 <!-- END OF EDITABLE SECTION -->
 <script>
@@ -530,7 +530,11 @@ function App(props){
     user.email.split('@')[0]
   );
   var tabs=[['orders','Orders'],['new','+'],['history','History']];
-  if(admin){tabs.push(['menu','Menu']);tabs.push(['customers','Cust']);tabs.push(['users','Users']);}
+  // admin = role-based (includes promoted admins) → Menu, Cust
+  // superAdmin = strictly GH_ADMINS seeded emails → Users tab only
+  var superAdmin=isAdminEmail(user.email);
+  if(admin){tabs.push(['menu','Menu']);tabs.push(['customers','Cust']);}
+  if(superAdmin){tabs.push(['users','Users']);}
 
   return h('div',{className:'wrap'},
     h('div',{className:'hdr'},
@@ -556,7 +560,7 @@ function App(props){
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
-      tab==='users'   &&admin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser})
+      tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser})
     ),
     billCust&&h(BillModal,{cust:billCust,cats,onClose:function(){setBillId(null);},
       onSavePhone:function(ph){
@@ -1267,10 +1271,16 @@ function BillModal(props){
     document.body.appendChild(iframe);
     var doc=iframe.contentDocument||iframe.contentWindow.document;
     doc.open();doc.write(html);doc.close();
+    // Browsers use the PARENT document title for the "Save as PDF" filename
+    var prevTitle=document.title;
+    document.title=fname;
     setTimeout(function(){
       try{iframe.contentWindow.focus();iframe.contentWindow.print();}
       catch(e){alert('Print failed: '+e.message);}
-      setTimeout(function(){document.body.removeChild(iframe);},2000);
+      setTimeout(function(){
+        document.body.removeChild(iframe);
+        document.title=prevTitle;
+      },2000);
     },300);
   }
   return h('div',{className:'ovl',onClick:onClose},
