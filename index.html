@@ -88,12 +88,13 @@ window.GH_CONFIG = {
   supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
   // UPI payment — leave blank to disable UPI link on bills
   upiId:     "9503019681-3@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
-  hotelName: "Gavthan"               // shown in customer's UPI app
-  };
+  hotelName: "Gavthan",
+  partnerDiscount: 0               // shown in customer's UPI app
+};
 // Emails that get Admin access — everyone else is Staff
 window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 </script>
-<!-- END OF EDITABLE SECTION -->
+<!-- END OF EDITABLE SECTION -->x
 <script>
 'use strict';
 
@@ -146,15 +147,21 @@ var useRef    = React.useRef;
 
 // ── HELPERS ────────────────────────────────────────
 function tot(items){return items.reduce(function(s,i){return s+i.price*i.qty;},0);}
-// Subtotal with partner discount applied
-function subTotal(cust){
-  var s=tot(cust.items||[]);
-  if(cust.is_partner&&PARTNER_DISCOUNT>0) s=Math.round(s*(1-PARTNER_DISCOUNT/100));
-  return s;
+// Raw items total
+function rawTotal(cust){return tot(cust.items||[]);}
+// Discount amount = % of raw total, only if discount checkbox on
+function discountAmt(cust){
+  if(cust.discount_on&&Number(cust.discount_pct)>0)
+    return Math.round(rawTotal(cust)*Number(cust.discount_pct)/100);
+  return 0;
 }
-// Grand total = discounted subtotal + adjustment
+// Flat adjustment, only if adjustment checkbox on
+function adjustAmt(cust){
+  return cust.adjustment_on?(Number(cust.adjustment)||0):0;
+}
+// Grand total = items − discount + adjustment
 function finalTotal(cust){
-  return subTotal(cust)+(Number(cust.adjustment)||0);
+  return rawTotal(cust)-discountAmt(cust)+adjustAmt(cust);
 }
 function clr(cat,cats){var i=cats.indexOf(cat);var p=PALETTE[(i<0?0:i)%PALETTE.length];return{bg:p[0],tx:p[1]};}
 function todayStr(){return new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'});}
@@ -426,16 +433,17 @@ function App(props){
       .then(function(){if(selId===cid)setSelId(null);})
       .catch(showErr);
   }
-  function setPartner(cid,val){
-    setCusts(function(p){return p.map(function(c){return c.id===cid?Object.assign({},c,{is_partner:val}):c;});});
-    supa.from('mh_customers').update({is_partner:val}).eq('id',cid)
+  function setDiscount(cid,on,pct){
+    var p=Number(pct)||0;
+    setCusts(function(prev){return prev.map(function(c){return c.id===cid?Object.assign({},c,{discount_on:on,discount_pct:p}):c;});});
+    supa.from('mh_customers').update({discount_on:on,discount_pct:p}).eq('id',cid)
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));})
       .catch(function(e){showErr(e);fetchAll();});
   }
-  function setAdjustment(cid,amt){
+  function setAdjustment(cid,on,amt){
     var n=Number(amt)||0;
-    setCusts(function(p){return p.map(function(c){return c.id===cid?Object.assign({},c,{adjustment:n}):c;});});
-    supa.from('mh_customers').update({adjustment:n}).eq('id',cid)
+    setCusts(function(prev){return prev.map(function(c){return c.id===cid?Object.assign({},c,{adjustment_on:on,adjustment:n}):c;});});
+    supa.from('mh_customers').update({adjustment_on:on,adjustment:n}).eq('id',cid)
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));})
       .catch(function(e){showErr(e);fetchAll();});
   }
@@ -555,7 +563,7 @@ function App(props){
     h('div',{className:'body'},
       appErr&&h('div',{style:{background:'#FEF2F2',color:'#991B1B',border:'1px solid #FECACA',borderRadius:8,padding:'10px 12px',marginBottom:8,fontSize:12,lineHeight:1.7},onClick:function(){setAppErr('');}},
         h('strong',null,'⚠️ Error — '),appErr,h('span',{style:{float:'right',cursor:'pointer',fontWeight:700}},'✕')),
-      tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setPartner,setAdjustment}),
+      tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment}),
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
@@ -587,7 +595,7 @@ function OrdersTab(props){
           h('div',null,h('div',{style:{fontWeight:700}},c.name),h('div',{className:'muted',style:{fontSize:11}},c.room+(c.phone?' · '+c.phone:''))),
           h('div',{style:{textAlign:'right'}},h('div',{style:{fontWeight:700,color:'#B45309'}},'₹'+finalTotal(c)),h('div',{className:'muted',style:{fontSize:10}},fmtDT(c.date)))
         ),
-        c.id===selId&&h(OrderPanel,{cust:c,menu,cats,upsertItem,settle,delCust,setBillId,setPartner:props.setPartner,setAdjustment:props.setAdjustment})
+        c.id===selId&&h(OrderPanel,{cust:c,menu,cats,upsertItem,settle,delCust,setBillId,setDiscount:props.setDiscount,setAdjustment:props.setAdjustment})
       );
     })
   );
@@ -596,13 +604,15 @@ function OrdersTab(props){
 function OrderPanel(props){
   var cust=props.cust,menu=props.menu,cats=props.cats,upsertItem=props.upsertItem;
   var settle=props.settle,delCust=props.delCust,setBillId=props.setBillId;
-  var setPartner=props.setPartner,setAdjustment=props.setAdjustment;
+  var setDiscount=props.setDiscount,setAdjustment=props.setAdjustment;
   var _cat=useState(cats[0]||'');var cat=_cat[0];var setCat=_cat[1];
   var _q=useState('');var q=_q[0];var setQ=_q[1];
+  var _disc=useState(String(cust.discount_pct||''));var disc=_disc[0];var setDisc=_disc[1];
   var _adj=useState(String(cust.adjustment||''));var adj=_adj[0];var setAdj=_adj[1];
   var filtered=menu.filter(function(m){return m.cat===cat&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
-  var raw=tot(cust.items);
-  var sub=subTotal(cust);
+  var raw=rawTotal(cust);
+  var dAmt=discountAmt(cust);
+  var aAmt=adjustAmt(cust);
   var grand=finalTotal(cust);
   return h('div',{onClick:function(e){e.stopPropagation();}},
     h('div',{className:'hr'}),
@@ -617,14 +627,14 @@ function OrderPanel(props){
           h('span',{style:{minWidth:44,textAlign:'right',fontWeight:700}},'₹'+(it.price*it.qty))
         );
       })),
-      // Subtotal / partner discount / adjustment breakdown
+      // Working breakdown (staff screen only)
       h('div',{style:{paddingTop:5,fontSize:12}},
         h('div',{className:'row bw'},h('span',{className:'muted'},'Items subtotal'),h('span',null,'₹'+raw)),
-        cust.is_partner&&PARTNER_DISCOUNT>0&&h('div',{className:'row bw',style:{color:'#166534'}},
-          h('span',null,'Partner discount ('+PARTNER_DISCOUNT+'%)'),h('span',null,'-₹'+(raw-sub))
+        dAmt>0&&h('div',{className:'row bw',style:{color:'#166534'}},
+          h('span',null,'Discount ('+cust.discount_pct+'%)'),h('span',null,'-₹'+dAmt)
         ),
-        (Number(cust.adjustment)||0)!==0&&h('div',{className:'row bw',style:{color:(Number(cust.adjustment)<0?'#166534':'#991B1B')}},
-          h('span',null,'Adjustment (Adj)'),h('span',null,(Number(cust.adjustment)>0?'+':'')+'₹'+Number(cust.adjustment))
+        cust.adjustment_on&&aAmt!==0&&h('div',{className:'row bw',style:{color:(aAmt<0?'#166534':'#991B1B')}},
+          h('span',null,'Adjustment'),h('span',null,(aAmt>0?'+':'')+'₹'+aAmt)
         ),
         h('div',{className:'row bw',style:{fontWeight:700,fontSize:14,paddingTop:3,borderTop:'1px solid #e0ddd6',marginTop:3}},
           h('span',null,'Total'),
@@ -633,22 +643,33 @@ function OrderPanel(props){
       )
     ),
     h('div',{className:'hr'}),
-    // Partner checkbox + adjustment input
-    h('div',{className:'row bw',style:{marginBottom:6,gap:8,flexWrap:'wrap'}},
-      h('label',{className:'row',style:{gap:5,cursor:'pointer',fontSize:12}},
-        h('input',{type:'checkbox',checked:!!cust.is_partner,style:{width:'auto'},
-          onChange:function(e){setPartner(cust.id,e.target.checked);}}),
-        h('span',null,'Partner billing'+(PARTNER_DISCOUNT>0?' ('+PARTNER_DISCOUNT+'% off)':''))
+    // Discount % checkbox + input
+    h('div',{className:'row',style:{marginBottom:6,gap:6}},
+      h('label',{className:'row',style:{gap:5,cursor:'pointer',fontSize:12,flex:1}},
+        h('input',{type:'checkbox',checked:!!cust.discount_on,style:{width:'auto'},
+          onChange:function(e){setDiscount(cust.id,e.target.checked,disc||cust.discount_pct||0);}}),
+        h('span',null,'Discount %')
       ),
-      h('div',{className:'row',style:{gap:4}},
-        h('span',{className:'muted',style:{fontSize:12}},'Adj ₹'),
-        h('input',{type:'number',value:adj,placeholder:'0',style:{width:70},
-          onChange:function(e){setAdj(e.target.value);},
-          onBlur:function(){setAdjustment(cust.id,adj);},
-          onKeyDown:function(e){if(e.key==='Enter')setAdjustment(cust.id,adj);}})
-      )
+      h('input',{type:'number',value:disc,placeholder:'0',min:0,max:100,style:{width:70},
+        onChange:function(e){setDisc(e.target.value);},
+        onBlur:function(){setDiscount(cust.id,!!cust.discount_on,disc);},
+        onKeyDown:function(e){if(e.key==='Enter')setDiscount(cust.id,!!cust.discount_on,disc);}}),
+      h('span',{className:'muted',style:{fontSize:12}},'%')
     ),
-    h('div',{className:'muted',style:{fontSize:10,marginBottom:6}},'Adj: enter + amount for extra charge, - amount for discount.'),
+    // Adjustment checkbox + input
+    h('div',{className:'row',style:{marginBottom:4,gap:6}},
+      h('label',{className:'row',style:{gap:5,cursor:'pointer',fontSize:12,flex:1}},
+        h('input',{type:'checkbox',checked:!!cust.adjustment_on,style:{width:'auto'},
+          onChange:function(e){setAdjustment(cust.id,e.target.checked,adj||cust.adjustment||0);}}),
+        h('span',null,'Adjustment')
+      ),
+      h('span',{className:'muted',style:{fontSize:12}},'₹'),
+      h('input',{type:'number',value:adj,placeholder:'0',style:{width:70},
+        onChange:function(e){setAdj(e.target.value);},
+        onBlur:function(){setAdjustment(cust.id,!!cust.adjustment_on,adj);},
+        onKeyDown:function(e){if(e.key==='Enter')setAdjustment(cust.id,!!cust.adjustment_on,adj);}})
+    ),
+    h('div',{className:'muted',style:{fontSize:10,marginBottom:6}},'Adjustment: + amount for extra charge, - amount to deduct.'),
     h('div',{className:'hr'}),
     h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
     h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',onClick:function(){setCat(c);}},c);})),
@@ -1187,16 +1208,6 @@ function BillModal(props){
       lines.push(pad(nm,17)+padL(i.qty,3)+'  '+padL('Rs'+i.price,6)+'  '+padL('Rs'+(i.price*i.qty),6));
     });
     lines.push('----------------------------------');
-    var raw=tot(cust.items);
-    var sub=subTotal(cust);
-    var adjV=Number(cust.adjustment)||0;
-    if(cust.is_partner&&PARTNER_DISCOUNT>0){
-      lines.push(pad('Subtotal',24)+padL('Rs'+raw,8));
-      lines.push(pad('Partner disc ('+PARTNER_DISCOUNT+'%)',24)+padL('-Rs'+(raw-sub),8));
-    }
-    if(adjV!==0){
-      lines.push(pad('Adjustment (Adj)',24)+padL((adjV>0?'+':'')+'Rs'+adjV,8));
-    }
     lines.push(pad('TOTAL',24)+padL('Rs'+t,8));
     lines.push('```');
     // UPI payment link (UPI VPA must NOT be URL-encoded; @ is literal)
@@ -1252,20 +1263,9 @@ function BillModal(props){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
-    var raw=tot(cust.items);
-    var sub=subTotal(cust);
-    var adjV=Number(cust.adjustment)||0;
-    var breakdown='';
-    if(cust.is_partner&&PARTNER_DISCOUNT>0){
-      breakdown+='<div class="sl"><span>Subtotal</span><span>&#8377;'+raw+'</span></div>';
-      breakdown+='<div class="sl"><span>Partner discount ('+PARTNER_DISCOUNT+'%)</span><span>-&#8377;'+(raw-sub)+'</span></div>';
-    }
-    if(adjV!==0){
-      breakdown+='<div class="sl"><span>Adjustment (Adj)</span><span>'+(adjV>0?'+':'')+'&#8377;'+adjV+'</span></div>';
-    }
     // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
     var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+(cust.is_partner?'<div class="inf"><span><b>PARTNER BILLING</b></span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
     var iframe=document.createElement('iframe');
     iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
     document.body.appendChild(iframe);
@@ -1302,18 +1302,6 @@ function BillModal(props){
           h('tbody',null,cust.items.map(function(it){return h('tr',{key:it.id},h('td',{style:{padding:'4px 0'}},it.name),h('td',{style:{textAlign:'right',padding:'4px 0'}},it.qty),h('td',{style:{textAlign:'right',padding:'4px 0'}},'₹'+it.price),h('td',{style:{textAlign:'right',padding:'4px 0',fontWeight:700}},'₹'+(it.price*it.qty)));}))
         ),
         h('div',{className:'hr'}),
-        (function(){
-          var raw=tot(cust.items),sub=subTotal(cust),adjV=Number(cust.adjustment)||0;
-          var rowsB=[];
-          if(cust.is_partner&&PARTNER_DISCOUNT>0){
-            rowsB.push(h('div',{key:'s',style:{display:'flex',justifyContent:'space-between',fontSize:12}},h('span',{style:{color:'#6b6b67'}},'Subtotal'),h('span',null,'₹'+raw)));
-            rowsB.push(h('div',{key:'p',style:{display:'flex',justifyContent:'space-between',fontSize:12,color:'#166534'}},h('span',null,'Partner discount ('+PARTNER_DISCOUNT+'%)'),h('span',null,'-₹'+(raw-sub))));
-          }
-          if(adjV!==0){
-            rowsB.push(h('div',{key:'a',style:{display:'flex',justifyContent:'space-between',fontSize:12,color:adjV<0?'#166534':'#991B1B'}},h('span',null,'Adjustment (Adj)'),h('span',null,(adjV>0?'+':'')+'₹'+adjV)));
-          }
-          return rowsB.length?h('div',{style:{marginBottom:4}},rowsB):null;
-        })(),
         h('div',{style:{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:16}},h('span',null,'Total'),h('span',{style:{color:'#B45309'}},'₹'+t)),
         h('div',{style:{textAlign:'center',fontSize:11,color:'#6b6b67',marginTop:12}},'Thank you for visiting Gavthan!')
       )
