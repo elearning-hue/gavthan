@@ -863,7 +863,7 @@ function HistoryTab(props){
       return [c.name,c.room,c.phone||'',
         c.date?new Date(c.date).toLocaleString('en-IN'):'',
         c.settled_at?new Date(c.settled_at).toLocaleString('en-IN'):'',
-        itemsStr,tot(c.items||[]),c.added_by||''
+        itemsStr,finalTotal(c),c.added_by||''
       ].map(esc).join(',');
     });
     var csv=headers.join(',')+'\n'+rows.join('\n');
@@ -1058,7 +1058,7 @@ function CustomersTab(props){
   custs.forEach(function(c){
     if(!c.name||c.name.indexOf('Cust ')===0)return; // skip auto-generated default names
     var key=(c.phone&&c.phone.length>=10)?c.phone:(c.name+'|'+(c.room||''));
-    var spent=c.status==='settled'?tot(c.items||[]):0;
+    var spent=c.status==='settled'?finalTotal(c):0;
     if(!map[key]){
       map[key]={name:c.name,phone:c.phone||'',visits:0,settled:0,totalSpent:0,lastVisit:c.date};
     }
