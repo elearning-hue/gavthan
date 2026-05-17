@@ -462,6 +462,9 @@ function App(props){
     if(!cust)return;
     if(!admin&&cust.added_by!==user.email){alert('You can only settle your own orders. Ask an admin.');return;}
     if(finalTotal(cust)===0){alert('Cannot settle zero-amount bill. Add items first.');return;}
+    if((cust.discount_on||cust.adjustment_on)&&!(cust.reason||'').trim()){
+      alert('A Reason is required when Discount or Adjustment is applied. Please fill the Reason field.');return;
+    }
     if(!confirm('Settle this customer?'))return;
     var now=new Date().toISOString();
     supa.from('mh_customers').update({status:'settled',settled_at:now}).eq('id',cid)
@@ -609,7 +612,7 @@ function App(props){
     h('div',{className:'body'},
       appErr&&h('div',{style:{background:'#FEF2F2',color:'#991B1B',border:'1px solid #FECACA',borderRadius:8,padding:'10px 12px',marginBottom:8,fontSize:12,lineHeight:1.7},onClick:function(){setAppErr('');}},
         h('strong',null,'⚠️ Error — '),appErr,h('span',{style:{float:'right',cursor:'pointer',fontWeight:700}},'✕')),
-      tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment}),
+      tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment,updateCustomer}),
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
@@ -642,7 +645,7 @@ function OrdersTab(props){
           h('div',null,h('div',{style:{fontWeight:700}},c.name),h('div',{className:'muted',style:{fontSize:11}},c.room+(c.phone?' · '+c.phone:''))),
           h('div',{style:{textAlign:'right'}},h('div',{style:{fontWeight:700,color:'#B45309'}},'₹'+finalTotal(c)),h('div',{className:'muted',style:{fontSize:10}},fmtDT(c.date)))
         ),
-        c.id===selId&&h(OrderPanel,{cust:c,menu,cats,upsertItem,settle,delCust,setBillId,setDiscount:props.setDiscount,setAdjustment:props.setAdjustment})
+        c.id===selId&&h(OrderPanel,{cust:c,menu,cats,upsertItem,settle,delCust,setBillId,setDiscount:props.setDiscount,setAdjustment:props.setAdjustment,updateCustomer:props.updateCustomer})
       );
     })
   );
@@ -652,10 +655,13 @@ function OrderPanel(props){
   var cust=props.cust,menu=props.menu,cats=props.cats,upsertItem=props.upsertItem;
   var settle=props.settle,delCust=props.delCust,setBillId=props.setBillId;
   var setDiscount=props.setDiscount,setAdjustment=props.setAdjustment;
+  var updateCustomer=props.updateCustomer;
   var _cat=useState(cats[0]||'');var cat=_cat[0];var setCat=_cat[1];
   var _q=useState('');var q=_q[0];var setQ=_q[1];
   var _disc=useState(String(cust.discount_pct||''));var disc=_disc[0];var setDisc=_disc[1];
   var _adj=useState(String(cust.adjustment||''));var adj=_adj[0];var setAdj=_adj[1];
+  var _reason=useState(cust.reason||'');var reason=_reason[0];var setReason=_reason[1];
+  var reasonNeeded=!!(cust.discount_on||cust.adjustment_on);
   var filtered=menu.filter(function(m){return m.cat===cat&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
   var raw=rawTotal(cust);
   var dAmt=discountAmt(cust);
@@ -717,6 +723,20 @@ function OrderPanel(props){
         onKeyDown:function(e){if(e.key==='Enter')setAdjustment(cust.id,!!cust.adjustment_on,adj);}})
     ),
     h('div',{className:'muted',style:{fontSize:10,marginBottom:6}},'Adjustment: + amount for extra charge, - amount to deduct.'),
+    // Reason field — enabled & mandatory when discount or adjustment is on
+    h('div',{style:{marginBottom:4}},
+      h('div',{className:'row bw',style:{marginBottom:3}},
+        h('span',{style:{fontSize:12,fontWeight:600,color:reasonNeeded?'#B45309':'#9b9b97'}},
+          'Reason'+(reasonNeeded?' *':'')),
+        reasonNeeded&&!reason.trim()&&h('span',{style:{fontSize:10,color:'#991B1B',fontWeight:700}},'Required')
+      ),
+      h('input',{value:reason,disabled:!reasonNeeded,
+        placeholder:reasonNeeded?'Why is discount/adjustment applied?':'Enable Discount or Adjustment first',
+        style:{background:reasonNeeded?'#fff':'#f0ede8',borderColor:reasonNeeded&&!reason.trim()?'#991B1B':undefined},
+        onChange:function(e){setReason(e.target.value);},
+        onBlur:function(){if(updateCustomer)updateCustomer(cust.id,{reason:reason.trim()});},
+        onKeyDown:function(e){if(e.key==='Enter'&&updateCustomer)updateCustomer(cust.id,{reason:reason.trim()});}})
+    ),
     h('div',{className:'hr'}),
     h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
     h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',onClick:function(){setCat(c);}},c);})),
