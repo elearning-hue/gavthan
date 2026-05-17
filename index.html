@@ -1366,18 +1366,10 @@ function BillModal(props){
   }
   function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
-    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
-    var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
-    var dA=discountAmt(cust),aA=adjustAmt(cust);
-    var breakdown='';
-    if(dA>0||cust.adjustment_on&&aA!==0){
-      breakdown+='<div class="sl"><span>Subtotal</span><span>&#8377;'+rawTotal(cust)+'</span></div>';
-      if(dA>0) breakdown+='<div class="sl"><span>Discount ('+cust.discount_pct+'%)</span><span>-&#8377;'+dA+'</span></div>';
-      if(cust.adjustment_on&&aA!==0) breakdown+='<div class="sl"><span>Adjustment</span><span>'+(aA>0?'+':'')+'&#8377;'+aA+'</span></div>';
-    }
+    var bill=buildBillHTML();
     // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
     var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+css+'</style></head><body><h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div></body></html>';
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+bill.css+'</style></head><body>'+bill.body+'</body></html>';
     var iframe=document.createElement('iframe');
     iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
     document.body.appendChild(iframe);
@@ -1395,14 +1387,35 @@ function BillModal(props){
       },2000);
     },300);
   }
+  // Builds the receipt HTML used by both Print and JPEG export (identical layout)
+  function buildBillHTML(){
+    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;width:320px;margin:0;background:#fff;color:#000}h2{text-align:center;font-size:18px;letter-spacing:3px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:0;border-top:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+    var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
+    var dA=discountAmt(cust),aA=adjustAmt(cust);
+    var breakdown='';
+    if(dA>0||cust.adjustment_on&&aA!==0){
+      breakdown+='<div class="sl"><span>Subtotal</span><span>&#8377;'+rawTotal(cust)+'</span></div>';
+      if(dA>0) breakdown+='<div class="sl"><span>Discount ('+cust.discount_pct+'%)</span><span>-&#8377;'+dA+'</span></div>';
+      if(cust.adjustment_on&&aA!==0) breakdown+='<div class="sl"><span>Adjustment</span><span>'+(aA>0?'+':'')+'&#8377;'+aA+'</span></div>';
+    }
+    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
+    return {css:css,body:body};
+  }
+
   function saveJPEG(){
     if(t===0){alert('Cannot save a zero-amount bill. Add items first.');return;}
     if(typeof html2canvas==='undefined'){alert('Image library not loaded. Check your internet connection and reload.');return;}
-    var el=billRef.current;
-    if(!el){alert('Bill content not ready.');return;}
-    html2canvas(el,{backgroundColor:'#ffffff',scale:2}).then(function(canvas){
+    var bill=buildBillHTML();
+    // Render the exact receipt layout in an offscreen container, then capture it
+    var holder=document.createElement('div');
+    holder.style.cssText='position:fixed;left:-9999px;top:0;width:320px;background:#fff';
+    holder.innerHTML='<style scoped>'+bill.css.replace(/body\{/,'.gh-bill{')+'</style><div class="gh-bill">'+bill.body+'</div>';
+    document.body.appendChild(holder);
+    var target=holder.querySelector('.gh-bill');
+    html2canvas(target,{backgroundColor:'#ffffff',scale:3}).then(function(canvas){
       var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t+'.jpg';
       canvas.toBlob(function(blob){
+        document.body.removeChild(holder);
         if(!blob){alert('Could not generate image.');return;}
         var url=URL.createObjectURL(blob);
         var a=document.createElement('a');
@@ -1410,7 +1423,10 @@ function BillModal(props){
         document.body.appendChild(a);a.click();document.body.removeChild(a);
         setTimeout(function(){URL.revokeObjectURL(url);},1000);
       },'image/jpeg',0.95);
-    }).catch(function(e){alert('Image export failed: '+e.message);});
+    }).catch(function(e){
+      if(holder.parentNode) document.body.removeChild(holder);
+      alert('Image export failed: '+e.message);
+    });
   }
   return h('div',{className:'ovl',onClick:onClose},
     h('div',{className:'modal',onClick:function(e){e.stopPropagation();}},
