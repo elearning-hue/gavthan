@@ -613,7 +613,7 @@ function App(props){
       appErr&&h('div',{style:{background:'#FEF2F2',color:'#991B1B',border:'1px solid #FECACA',borderRadius:8,padding:'10px 12px',marginBottom:8,fontSize:12,lineHeight:1.7},onClick:function(){setAppErr('');}},
         h('strong',null,'⚠️ Error — '),appErr,h('span',{style:{float:'right',cursor:'pointer',fontWeight:700}},'✕')),
       tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment,updateCustomer}),
-      tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs}),
+      tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs,admin}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
@@ -764,6 +764,7 @@ function OrderPanel(props){
 // ── NEW CUSTOMER TAB ───────────────────────────────
 function NewTab(props){
   var addCust=props.addCust,todayCnt=props.todayCnt,allCusts=props.allCusts||[];
+  var admin=props.admin;
   var _name=useState('Cust '+(todayCnt+1));var name=_name[0];var setName=_name[1];
   var _room=useState('');var room=_room[0];var setRoom=_room[1];
   var _phone=useState('');var phone=_phone[0];var setPhone=_phone[1];
@@ -813,9 +814,9 @@ function NewTab(props){
     if(ph && ph.length!==10){
       setMsg('Phone must be exactly 10 digits (or leave empty).');return;
     }
-    // Build ISO date: if today, use full now(); if past date, use chosen date + current time
+    // Build ISO date: staff always use now(); admin may backdate
     var dateISO;
-    if(billDate===todayYMD){
+    if(!admin||billDate===todayYMD){
       dateISO=new Date().toISOString();
     } else {
       var now=new Date();
@@ -868,9 +869,16 @@ function NewTab(props){
       ),
       h('div',{style:{marginBottom:8}},
         h('div',{className:'muted',style:{fontSize:11,marginBottom:3}},'Bill Date'),
-        h('input',{type:'date',value:billDate,min:minYMD,max:todayYMD,
-          onChange:function(e){setBillDate(e.target.value||todayYMD);}}),
-        billDate!==todayYMD&&h('div',{style:{fontSize:10,color:'#B45309',marginTop:2,fontWeight:600}},'⚠ Backdated bill — '+billDate)
+        admin
+          ? h('div',null,
+              h('input',{type:'date',value:billDate,min:minYMD,max:todayYMD,
+                onChange:function(e){setBillDate(e.target.value||todayYMD);}}),
+              billDate!==todayYMD&&h('div',{style:{fontSize:10,color:'#B45309',marginTop:2,fontWeight:600}},'⚠ Backdated bill — '+billDate)
+            )
+          : h('div',null,
+              h('input',{type:'date',value:todayYMD,disabled:true,style:{background:'#f0ede8'}}),
+              h('div',{style:{fontSize:10,color:'#6b6b67',marginTop:2}},'Backdated bills are admin-only.')
+            )
       ),
       h('button',{className:'btn btn-a',style:{width:'100%',marginTop:4,justifyContent:'center'},onClick:submit},'Add Customer'),
       msg&&h('div',{style:{marginTop:6,fontSize:12,color:msg.indexOf('!')!==-1||msg.indexOf('✓')!==-1?'#166534':'#991B1B',textAlign:'center'}},msg)
@@ -1414,7 +1422,7 @@ function BillModal(props){
   }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
-    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;width:320px;margin:0;background:#fff;color:#000}h2{text-align:center;font-size:18px;letter-spacing:3px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:0;border-top:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;width:320px;margin:0 auto;background:#fff;color:#000}h2{text-align:center;font-size:18px;letter-spacing:3px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:0;border-top:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+i.name+'</td><td>'+i.qty+'</td><td>&#8377;'+i.price+'</td><td>&#8377;'+(i.price*i.qty)+'</td></tr>';}).join('');
     var dA=discountAmt(cust),aA=adjustAmt(cust);
     var breakdown='';
