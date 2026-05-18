@@ -908,7 +908,8 @@ function HistoryTab(props){
                 h('button',{className:'btn xs',onClick:function(){setBillId(c.id);}},'🧾 Bill'))
             ),
             h('div',{className:'row',style:{gap:5}},h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.settled_at)),h('span',{className:'tag-s'},'Settled')),
-            h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':''))
+            h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':'')),
+            (c.discount_on||c.adjustment_on)&&c.reason&&h('div',{style:{fontSize:11,color:'#B45309',fontStyle:'italic'}},'Reason: '+c.reason)
           );
         })
       )
@@ -945,14 +946,14 @@ function HistoryTab(props){
   useEffect(function(){setPage(0);},[searchName,dateFrom,dateTo,selMonth,selYear,selStaff,filterMode]);
 
   function exportCSV(){
-    var headers=['Customer','Room','Phone','Created','Settled At','Items','Total','Staff'];
+    var headers=['Customer','Room','Phone','Created','Settled At','Items','Total','Reason','Staff'];
     function esc(v){v=String(v==null?'':v).replace(/"/g,'""');return /[",\n]/.test(v)?'"'+v+'"':v;}
     var rows=shown.map(function(c){
       var itemsStr=(c.items||[]).map(function(i){return i.name+'x'+i.qty+'@'+i.price;}).join('; ');
       return [c.name,c.room,c.phone||'',
         c.date?new Date(c.date).toLocaleString('en-IN'):'',
         c.settled_at?new Date(c.settled_at).toLocaleString('en-IN'):'',
-        itemsStr,finalTotal(c),c.added_by||''
+        itemsStr,finalTotal(c),(c.discount_on||c.adjustment_on)?(c.reason||''):'',c.added_by||''
       ].map(esc).join(',');
     });
     var csv=headers.join(',')+'\n'+rows.join('\n');
@@ -1030,7 +1031,8 @@ function HistoryTab(props){
             h('span',{className:'tag-s'},'Settled'),
             sn&&h('span',{style:{fontSize:10,color:'#6b6b67'}},'by '+sn)
           ),
-          h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':''))
+          h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':'')),
+          (c.discount_on||c.adjustment_on)&&c.reason&&h('div',{style:{fontSize:11,color:'#B45309',fontStyle:'italic'}},'Reason: '+c.reason)
         );
       }),
       // Pagination controls
@@ -1335,6 +1337,9 @@ function BillModal(props){
     }
     lines.push(pad('TOTAL',24)+padL('Rs'+t,8));
     lines.push('```');
+    if((cust.discount_on||cust.adjustment_on)&&cust.reason){
+      lines.push('Reason: '+cust.reason);
+    }
     // UPI payment link (UPI VPA must NOT be URL-encoded; @ is literal)
     if(UPI_ID){
       var amt=Math.round(Number(t)); // integer rupees, no decimals
@@ -1417,6 +1422,7 @@ function BillModal(props){
       breakdown+='<div class="sl"><span>Subtotal</span><span>&#8377;'+rawTotal(cust)+'</span></div>';
       if(dA>0) breakdown+='<div class="sl"><span>Discount ('+cust.discount_pct+'%)</span><span>-&#8377;'+dA+'</span></div>';
       if(cust.adjustment_on&&aA!==0) breakdown+='<div class="sl"><span>Adjustment</span><span>'+(aA>0?'+':'')+'&#8377;'+aA+'</span></div>';
+      if(cust.reason) breakdown+='<div class="sl" style="color:#666;font-style:italic"><span>Reason:</span><span>'+cust.reason+'</span></div>';
     }
     var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
     return {css:css,body:body};
@@ -1491,6 +1497,7 @@ function BillModal(props){
             h('span',null,'Discount ('+cust.discount_pct+'%)'),h('span',null,'-₹'+dA)));
           if(cust.adjustment_on&&aA!==0) rowsB.push(h('div',{key:'a',style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2,color:aA<0?'#166534':'#991B1B'}},
             h('span',null,'Adjustment'),h('span',null,(aA>0?'+':'')+'₹'+aA)));
+          if((cust.discount_on||cust.adjustment_on)&&cust.reason) rowsB.push(h('div',{key:'r',style:{fontSize:11,color:'#6b6b67',fontStyle:'italic',marginBottom:2}},'Reason: '+cust.reason));
           return h('div',{style:{marginBottom:6}},rowsB);
         })(),
         h('div',{style:{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:16}},h('span',null,'Total'),h('span',{style:{color:'#B45309'}},'₹'+t)),
