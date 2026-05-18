@@ -168,6 +168,9 @@ function clr(cat,cats){var i=cats.indexOf(cat);var p=PALETTE[(i<0?0:i)%PALETTE.l
 function todayStr(){return new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'});}
 function timeStr(){return new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}
 function fmtDT(d){return new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});}
+// Format a specific ISO timestamp (used for bill date — may be backdated)
+function dateOf(iso){return new Date(iso).toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'});}
+function timeOf(iso){return new Date(iso).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}
 function isAdminEmail(email){return ADMIN_EMAILS.indexOf((email||'').toLowerCase())!==-1;}
 function initCap(s){return(s||'').toLowerCase().replace(/\b\w/g,function(c){return c.toUpperCase();});}
 function todayCount(custs){var t=new Date().toDateString();return custs.filter(function(c){return new Date(c.date).toDateString()===t;}).length;}
@@ -915,7 +918,7 @@ function HistoryTab(props){
               h('div',{className:'row',style:{gap:4}},h('span',{style:{fontWeight:700,color:'#B45309'}},'₹'+t),
                 h('button',{className:'btn xs',onClick:function(){setBillId(c.id);}},'🧾 Bill'))
             ),
-            h('div',{className:'row',style:{gap:5}},h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.settled_at)),h('span',{className:'tag-s'},'Settled')),
+            h('div',{className:'row',style:{gap:5}},h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.date)),h('span',{className:'tag-s'},'Settled')),
             h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':'')),
             (c.discount_on||c.adjustment_on)&&c.reason&&h('div',{style:{fontSize:11,color:'#B45309',fontStyle:'italic'}},'Reason: '+c.reason)
           );
@@ -939,13 +942,13 @@ function HistoryTab(props){
   var shown=settled.filter(function(c){
     if(selStaff!=='all'&&(c.added_by||'')!==selStaff)return false;
     if(searchName){var n=searchName.toLowerCase();if(c.name.toLowerCase().indexOf(n)===-1&&c.room.toLowerCase().indexOf(n)===-1)return false;}
-    var dt=c.settled_at?new Date(c.settled_at):null;
+    var dt=c.date?new Date(c.date):(c.settled_at?new Date(c.settled_at):null);
     if(!dt)return true;
     if(filterMode==='date'){if(dateFrom&&dt<new Date(dateFrom))return false;if(dateTo&&dt>new Date(dateTo+'T23:59:59'))return false;}
     else if(filterMode==='month'){if(String(dt.getMonth()+1).padStart(2,'0')!==selMonth)return false;if(String(dt.getFullYear())!==selYear)return false;}
     else if(filterMode==='year'){if(String(dt.getFullYear())!==selYear)return false;}
     return true;
-  }).sort(function(a,b){return new Date(b.settled_at||b.date)-new Date(a.settled_at||a.date);});
+  }).sort(function(a,b){return new Date(b.date||b.settled_at)-new Date(a.date||a.settled_at);});
   var shownRev=shown.reduce(function(s,c){return s+finalTotal(c);},0);
   var totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
   var safePage=Math.min(page,totalPages-1);
@@ -1035,7 +1038,7 @@ function HistoryTab(props){
             )
           ),
           h('div',{className:'row',style:{gap:5,flexWrap:'wrap'}},
-            c.settled_at&&h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.settled_at)),
+            c.settled_at&&h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.date)),
             h('span',{className:'tag-s'},'Settled'),
             sn&&h('span',{style:{fontSize:10,color:'#6b6b67'}},'by '+sn)
           ),
@@ -1325,7 +1328,7 @@ function BillModal(props){
     lines.push('');
     lines.push('Customer: *'+cust.name+'*');
     lines.push('Room/Table: *'+cust.room+'*');
-    lines.push('Date: '+todayStr()+'   Time: '+timeStr());
+    lines.push('Date: '+dateOf(cust.date)+'   Time: '+timeOf(cust.date));
     if(cust.phone) lines.push('Phone: '+cust.phone);
     lines.push('');
     // Monospace table — WhatsApp renders triple-backtick blocks in fixed-width font
@@ -1432,7 +1435,7 @@ function BillModal(props){
       if(cust.adjustment_on&&aA!==0) breakdown+='<div class="sl"><span>Adjustment</span><span>'+(aA>0?'+':'')+'&#8377;'+aA+'</span></div>';
       if(cust.reason) breakdown+='<div class="sl" style="color:#666;font-style:italic"><span>Reason:</span><span>'+cust.reason+'</span></div>';
     }
-    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+todayStr()+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeStr()+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
+    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+cust.name+'</b></span><span>'+dateOf(cust.date)+'</span></div><div class="inf"><span>Room/Table: <b>'+cust.room+'</b></span><span>'+timeOf(cust.date)+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+cust.phone+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+UPI_ID+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
     return {css:css,body:body};
   }
 
@@ -1487,7 +1490,7 @@ function BillModal(props){
         ),
         h('div',{ref:billRef,style:{background:'#fff',padding:'4px 0'}},
         h('div',{style:{textAlign:'center',marginBottom:12}},h('div',{style:{fontSize:18,fontWeight:700,letterSpacing:3}},'GAVTHAN'),h('div',{style:{fontSize:11,color:'#6b6b67'}},'Receipt / Bill')),
-        h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2}},h('b',null,cust.name),h('span',null,todayStr())),
+        h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2}},h('b',null,cust.name),h('span',null,dateOf(cust.date))),
         h('div',{style:{fontSize:12,marginBottom:2}},'Room/Table: ',h('b',null,cust.room)),
         cust.phone&&h('div',{style:{fontSize:12,marginBottom:4}},'Ph: ',h('b',null,cust.phone)),
         h('div',{className:'hr'}),
