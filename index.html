@@ -99,7 +99,7 @@ window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 </script>
 <!-- END OF EDITABLE SECTION -->
 <script>
-'use strict';	  
+'use strict';
 
 // ── CONFIG ─────────────────────────────────────────
 var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
@@ -126,17 +126,29 @@ var Drive=(function(){
   function authorize(){
     return new Promise(function(resolve,reject){
       if(!configured()){reject(new Error('Google Client ID not configured.'));return;}
-      if(typeof google==='undefined'||!google.accounts){reject(new Error('Google Identity Services not loaded. Check internet.'));return;}
+      if(typeof google==='undefined'||!google.accounts){reject(new Error('Google Identity Services not loaded. Check internet and reload.'));return;}
       var client=google.accounts.oauth2.initTokenClient({
         client_id:GOOGLE_CLIENT_ID,
         scope:'https://www.googleapis.com/auth/drive.file',
         callback:function(resp){
-          if(resp.error){reject(new Error(resp.error));return;}
+          if(resp.error){
+            reject(new Error(resp.error+(resp.error_description?': '+resp.error_description:'')));
+            return;
+          }
           setToken(resp.access_token,resp.expires_in);
           resolve(resp.access_token);
+        },
+        error_callback:function(err){
+          // err.type can be: popup_closed, popup_failed_to_open, unknown
+          var msg=(err&&err.type)||'unknown';
+          var hint='';
+          if(msg==='popup_failed_to_open') hint=' — popup blocked by browser. Allow popups for this site.';
+          else if(msg==='popup_closed') hint=' — popup closed before completing.';
+          else hint=' — check that this domain is added to your OAuth Client\'s Authorized JavaScript origins in Google Cloud Console.';
+          reject(new Error('OAuth failed ('+msg+')'+hint));
         }
       });
-      client.requestAccessToken({prompt:''});
+      try{client.requestAccessToken();}catch(e){reject(e);}
     });
   }
   function ensureToken(){
@@ -444,6 +456,8 @@ function App(props){
   var _users=useState([]);var users=_users[0];var setUsers=_users[1];
   var _selId=useState(null);var selId=_selId[0];var setSelId=_selId[1];
   var _billId=useState(null);var billId=_billId[0];var setBillId=_billId[1];
+  // Preview bill number — peeks at lastBillNo+1 from config; only used for unsettled previews
+  var _previewBN=useState(null);var previewBillNo=_previewBN[0];var setPreviewBillNo=_previewBN[1];
   var _dbOk=useState(null);var dbOk=_dbOk[0];var setDbOk=_dbOk[1];
   var _err=useState('');var appErr=_err[0];var setAppErr=_err[1];
   var _menuErr=useState('');var menuErr=_menuErr[0];var setMenuErr=_menuErr[1];
@@ -848,6 +862,17 @@ function App(props){
   var todaySett=settled.filter(function(c){return c.settled_at&&new Date(c.settled_at).toDateString()===new Date().toDateString();});
   var todayRev=todaySett.reduce(function(s,c){return s+finalTotal(c);},0);
   var billCust=billId?custs.find(function(c){return c.id===billId;}):null;
+  // Fetch preview bill number whenever the bill modal opens for an unsettled order
+  useEffect(function(){
+    if(!billId){setPreviewBillNo(null);return;}
+    var c=custs.find(function(x){return x.id===billId;});
+    if(c&&c.bill_no){setPreviewBillNo(null);return;} // already settled & locked
+    supa.from('mh_config').select('data').eq('id','app').maybeSingle()
+      .then(function(r){
+        var cfg=(r.data&&r.data.data)||{};
+        setPreviewBillNo((Number(cfg.lastBillNo)||0)+1);
+      },function(){setPreviewBillNo(null);});
+  },[billId]);
   // Dynamic admin: DB role takes precedence over hardcoded list
   if(myUser&&myUser.role==='admin') admin=true;
   if(myUser&&myUser.role==='user') admin=false;
@@ -894,7 +919,7 @@ function App(props){
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
       tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout,backupDatabase,restoreFromBackup,driveInterval,saveDriveInterval,driveLast})
     ),
-    billCust&&h(BillModal,{cust:billCust,cats,onClose:function(){setBillId(null);},
+    billCust&&h(BillModal,{cust:billCust,cats,previewBillNo:previewBillNo,onClose:function(){setBillId(null);},
       updateCustomer:updateCustomer,
       onSavePhone:function(ph){
         supa.from('mh_customers').update({phone:ph}).eq('id',billCust.id)
@@ -1735,6 +1760,9 @@ function UsersTab(props){
 function BillModal(props){
   var cust=props.cust,onClose=props.onClose,onSavePhone=props.onSavePhone;
   var updateCustomer=props.updateCustomer;
+  var previewBillNo=props.previewBillNo;
+  // Displayed bill number = locked one if settled, else current preview (lastBillNo+1)
+  var displayBillNo=cust.bill_no||previewBillNo||null;
   var t=finalTotal(cust);
   var _editN=useState(cust.name||'');var editName=_editN[0];var setEditName=_editN[1];
   var _editP=useState(cust.phone||'');var editPhone=_editP[0];var setEditPhone=_editP[1];
@@ -1758,7 +1786,7 @@ function BillModal(props){
     var lines=[];
     // Header
     lines.push('*GAVTHAN*');
-    lines.push('_Receipt / Bill'+(cust.bill_no?' '+fmtBill(cust.bill_no):'')+'_');
+    lines.push('_Receipt / Bill'+(displayBillNo?' '+fmtBill(displayBillNo):'')+'_');
     lines.push('');
     lines.push('Customer: *'+cust.name+'*');
     lines.push('Room/Table: *'+cust.room+'*');
@@ -1877,7 +1905,7 @@ function BillModal(props){
     }
     // Date/time shown on the bill = bill_time (generation time) if set, else order creation date
     var billTs=cust.bill_time||cust.date;
-    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill'+(cust.bill_no?' '+fmtBill(cust.bill_no):'')+'</div><div class="inf"><span><b>'+escHtml(cust.name)+'</b></span><span>'+escHtml(dateOf(billTs))+'</span></div><div class="inf"><span>Room/Table: <b>'+escHtml(cust.room)+'</b></span><span>'+escHtml(timeOf(billTs))+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+escHtml(cust.phone)+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+escHtml(UPI_ID)+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
+    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill'+(displayBillNo?' '+fmtBill(displayBillNo):'')+'</div><div class="inf"><span><b>'+escHtml(cust.name)+'</b></span><span>'+escHtml(dateOf(billTs))+'</span></div><div class="inf"><span>Room/Table: <b>'+escHtml(cust.room)+'</b></span><span>'+escHtml(timeOf(billTs))+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+escHtml(cust.phone)+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+escHtml(UPI_ID)+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
     return {css:css,body:body};
   }
 
