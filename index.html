@@ -99,7 +99,7 @@ window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 </script>
 <!-- END OF EDITABLE SECTION -->
 <script>
-'use strict';
+'use strict';	 
 
 // ── CONFIG ─────────────────────────────────────────
 var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
@@ -815,18 +815,29 @@ function App(props){
 
   // ── User management ──
   function addUser(newEmail,newPass,newName,cb){
-    var role=isAdminEmail(newEmail)?'admin':'user';
-    secSupa.auth.signUp({email:newEmail,password:newPass})
+    var email=(newEmail||'').trim();
+    var pass=newPass||'';
+    var name=(newName||'').trim();
+    if(!email||!pass||!name){cb('Email, password, and name are all required.');return;}
+    var role=isAdminEmail(email)?'admin':'user';
+    secSupa.auth.signUp({email:email,password:pass,options:{data:{display_name:name}}})
       .then(function(r){
         if(r.error)throw new Error(r.error.message);
-        var uid=r.data.user.id;
-        return supa.from('mh_users').insert({id:uid,email:newEmail,display_name:newName,role:role,active:true});
+        var u=r.data&&r.data.user;
+        if(!u||!u.id){
+          throw new Error('User creation did not return a valid account. The email may already be registered, or email confirmation may need to be disabled in Supabase → Authentication → Sign In / Providers → Email.');
+        }
+        // Duplicate-email detection: Supabase returns user with identities=[] when email already exists
+        if(Array.isArray(u.identities)&&u.identities.length===0){
+          throw new Error('This email is already registered. Use the existing user or pick a different email.');
+        }
+        return supa.from('mh_users').insert({id:u.id,email:email,display_name:name,role:role,active:true});
       })
       .then(function(r){
         if(r&&r.error)throw new Error(sbErr(r.error));
         return secSupa.auth.signOut();
       })
-      .then(function(){fetchAll();cb(null,'User "'+newName+'" added!');})
+      .then(function(){fetchAll();cb(null,'User "'+name+'" added!');})
       .catch(function(e){cb(e.message);});
   }
   function toggleUserActive(id,current){
@@ -917,7 +928,7 @@ function App(props){
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
       tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem,toggleMenuAvail}),
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
-      tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout,backupDatabase,restoreFromBackup,driveInterval,saveDriveInterval,driveLast})
+      tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,currentEmail:user.email,superAdmin:superAdmin,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout,backupDatabase,restoreFromBackup,driveInterval,saveDriveInterval,driveLast})
     ),
     billCust&&h(BillModal,{cust:billCust,cats,previewBillNo:previewBillNo,onClose:function(){setBillId(null);},
       updateCustomer:updateCustomer,
@@ -1142,7 +1153,14 @@ function NewTab(props){
     if(ph && ph.length!==10){
       setMsg('Phone must be exactly 10 digits (or leave empty).');return;
     }
-    // Build ISO date: staff always use now(); admin may backdate
+    // Validate the bill date is within the allowed window (admin only — staff is locked)
+    if(admin&&billDate!==todayYMD){
+      if(billDate<minYMD||billDate>todayYMD){
+        setMsg('Bill date must be between '+minYMD+' and '+todayYMD+'.');
+        setBillDate(todayYMD);return;
+      }
+    }
+    // Build ISO date: staff always use now(); admin may backdate within window
     var dateISO;
     if(!admin||billDate===todayYMD){
       dateISO=new Date().toISOString();
@@ -1200,7 +1218,13 @@ function NewTab(props){
         admin
           ? h('div',null,
               h('input',{type:'date',value:billDate,min:minYMD,max:todayYMD,
-                onChange:function(e){setBillDate(e.target.value||todayYMD);}}),
+                onChange:function(e){
+                  var v=e.target.value||todayYMD;
+                  // Hard-clamp — browsers' native min/max are advisory; typed/pasted dates can escape them
+                  if(v>todayYMD) v=todayYMD;
+                  else if(v<minYMD){setMsg('Backdated bills are limited to the past 15 days.');v=minYMD;setTimeout(function(){setMsg('');},3000);}
+                  setBillDate(v);
+                }}),
               billDate!==todayYMD&&h('div',{style:{fontSize:10,color:'#B45309',marginTop:2,fontWeight:600}},'⚠ Backdated bill — '+billDate)
             )
           : h('div',null,
@@ -1566,6 +1590,13 @@ function CustomersTab(props){
 
 // ── USERS TAB ──────────────────────────────────────
 function UsersTab(props){
+  // Defense-in-depth: refuse to render if the caller isn't a seeded super-admin
+  if(!props.superAdmin||!isAdminEmail(props.currentEmail)){
+    return h('div',{className:'card'},
+      h('div',{className:'ttl'},'Access Denied'),
+      h('div',{className:'muted',style:{fontSize:12}},'The Users tab is restricted to the seeded admin(s) listed in GH_ADMINS.')
+    );
+  }
   var users=props.users,currentUid=props.currentUid,addUser=props.addUser;
   var toggleUserActive=props.toggleUserActive,changeUserRole=props.changeUserRole;
   var sendReset=props.sendReset,deleteUser=props.deleteUser;
