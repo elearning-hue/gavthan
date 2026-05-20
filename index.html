@@ -6,6 +6,7 @@
 <title>Gavthan — Billing</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <style>
@@ -84,6 +85,7 @@ input:focus,select:focus{outline:none;border-color:#B45309}
   EDIT THIS SECTION — Supabase Config, UPI, and Admin Emails
 ================================================================ -->
 <script>
+<script>
 window.GH_CONFIG = {
   supabaseUrl: "https://glaksnwcmiijiztsncvi.supabase.co",
   supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
@@ -91,6 +93,7 @@ window.GH_CONFIG = {
   upiId:     "9503019681-3@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
   hotelName: "Gavthan",
   partnerDiscount: 0               // shown in customer's UPI app
+  googleClientId: "968629668475-c1u5t14r4dtd60js9mj5rt056ni4i4cs.apps.googleusercontent.com"
 };
 // Emails that get Admin access — everyone else is Staff
 window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
@@ -98,6 +101,7 @@ window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 <!-- END OF EDITABLE SECTION -->x
 <script>
 'use strict';
+	  
 
 // ── CONFIG ─────────────────────────────────────────
 var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
@@ -105,7 +109,92 @@ var SUPABASE_KEY    = (window.GH_CONFIG||{}).supabaseKey  || '';
 var UPI_ID          = (window.GH_CONFIG||{}).upiId        || '';
 var HOTEL_NAME      = (window.GH_CONFIG||{}).hotelName    || 'Gavthan';
 var PARTNER_DISCOUNT= Number((window.GH_CONFIG||{}).partnerDiscount)||0;
+var GOOGLE_CLIENT_ID= (window.GH_CONFIG||{}).googleClientId  || '';
 var ADMIN_EMAILS    = ((window.GH_ADMINS)||[]).map(function(e){return e.toLowerCase();});
+
+// ── Google Drive backup helper ─────────────────────
+var Drive=(function(){
+  var TOKEN_KEY='gh_drive_token';
+  var FOLDER_NAME='Gavthan Backups';
+  function getToken(){
+    try{var s=sessionStorage.getItem(TOKEN_KEY);if(!s)return null;var o=JSON.parse(s);
+      if(o.exp&&Date.now()>o.exp)return null;return o.token;}catch(e){return null;}
+  }
+  function setToken(t,expSec){
+    sessionStorage.setItem(TOKEN_KEY,JSON.stringify({token:t,exp:Date.now()+(expSec||3500)*1000}));
+  }
+  function clearToken(){sessionStorage.removeItem(TOKEN_KEY);}
+  function configured(){return !!GOOGLE_CLIENT_ID;}
+  function authorize(){
+    return new Promise(function(resolve,reject){
+      if(!configured()){reject(new Error('Google Client ID not configured.'));return;}
+      if(typeof google==='undefined'||!google.accounts){reject(new Error('Google Identity Services not loaded. Check internet.'));return;}
+      var client=google.accounts.oauth2.initTokenClient({
+        client_id:GOOGLE_CLIENT_ID,
+        scope:'https://www.googleapis.com/auth/drive.file',
+        callback:function(resp){
+          if(resp.error){reject(new Error(resp.error));return;}
+          setToken(resp.access_token,resp.expires_in);
+          resolve(resp.access_token);
+        }
+      });
+      client.requestAccessToken({prompt:''});
+    });
+  }
+  function ensureToken(){
+    var t=getToken();
+    if(t)return Promise.resolve(t);
+    return authorize();
+  }
+  function api(path,opts){
+    return ensureToken().then(function(tok){
+      opts=opts||{};opts.headers=opts.headers||{};
+      opts.headers.Authorization='Bearer '+tok;
+      return fetch('https://www.googleapis.com/'+path,opts).then(function(r){
+        if(r.status===401){clearToken();throw new Error('Drive auth expired. Try again.');}
+        if(!r.ok)return r.text().then(function(tx){throw new Error('Drive '+r.status+': '+tx);});
+        return r;
+      });
+    });
+  }
+  function findOrCreateFolder(){
+    var q="name='"+FOLDER_NAME+"' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+    return api('drive/v3/files?q='+encodeURIComponent(q)+'&fields=files(id,name)').then(function(r){return r.json();})
+      .then(function(j){
+        if(j.files&&j.files.length>0) return j.files[0].id;
+        return api('drive/v3/files',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:FOLDER_NAME,mimeType:'application/vnd.google-apps.folder'})
+        }).then(function(r){return r.json();}).then(function(f){return f.id;});
+      });
+  }
+  function upload(dump){
+    return findOrCreateFolder().then(function(folderId){
+      var meta={name:'gavthan-backup-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json',parents:[folderId]};
+      var boundary='-------'+Math.random().toString(36).slice(2);
+      var body='--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify(meta)+'\r\n'+
+              '--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+JSON.stringify(dump)+'\r\n--'+boundary+'--';
+      return api('upload/drive/v3/files?uploadType=multipart',{
+        method:'POST',
+        headers:{'Content-Type':'multipart/related; boundary='+boundary},
+        body:body
+      }).then(function(r){return r.json();});
+    });
+  }
+  function list(){
+    return findOrCreateFolder().then(function(folderId){
+      var q="'"+folderId+"' in parents and trashed=false";
+      return api('drive/v3/files?q='+encodeURIComponent(q)+'&orderBy=createdTime desc&fields=files(id,name,createdTime,size)')
+        .then(function(r){return r.json();}).then(function(j){return j.files||[];});
+    });
+  }
+  function download(fileId){
+    return api('drive/v3/files/'+fileId+'?alt=media').then(function(r){return r.json();});
+  }
+  return {configured:configured,authorize:authorize,upload:upload,list:list,download:download,clearToken:clearToken,getToken:getToken};
+})();
+
 var INIT_CATS = ['Breakfast','Veg','Non-Veg','Bhakri','Chapati','Cold Drinks','Water Bottle','Glasses'];
 var PALETTE   = [['#FAEEDA','#412402'],['#EAF3DE','#27500A'],['#FAECE7','#4A1B0C'],['#E6F1FB','#042C53'],['#EEEDFE','#26215C'],['#E1F5EE','#04342C'],['#FBEAF0','#4B1528'],['#FAE8E0','#3B1005']];
 var INIT_MENU = [
@@ -173,6 +262,17 @@ function escHtml(s){
   return String(s==null?'':s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// Format a bill number as INV-00001
+function fmtBill(n){
+  if(!n)return '';
+  return 'INV-'+String(n).padStart(5,'0');
+}
+// Normalize an item's timestamps array (handles legacy data with just addedAt)
+function itemTimes(it){
+  if(Array.isArray(it.times)) return it.times;
+  if(it.addedAt) return [it.addedAt];
+  return [];
 }
 // Format a specific ISO timestamp (used for bill date — may be backdated)
 function dateOf(iso){return new Date(iso).toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'});}
@@ -401,30 +501,171 @@ function App(props){
     return function(){clearInterval(t);clearInterval(hb);clearInterval(cfgT);};
   },[]);
 
-  // ── Idle auto-logout ──
+  // ── Idle auto-logout with warning ──
+  var _idleWarn=useState(false);var idleWarn=_idleWarn[0];var setIdleWarn=_idleWarn[1];
   useEffect(function(){
     if(!sessionTimeout||sessionTimeout<=0)return;
     var idleMs=sessionTimeout*60*1000;
-    var timer;
+    var warnMs=Math.max(0,idleMs-60*1000); // warn 1 minute before
+    var timer,wtimer;
     function logout(){
-      alert('Session timed out after '+sessionTimeout+' minutes of inactivity. Please log in again.');
       supa.auth.signOut();
     }
-    function reset(){clearTimeout(timer);timer=setTimeout(logout,idleMs);}
+    function reset(){
+      clearTimeout(timer);clearTimeout(wtimer);
+      setIdleWarn(false);
+      wtimer=setTimeout(function(){setIdleWarn(true);},warnMs);
+      timer=setTimeout(logout,idleMs);
+    }
     var evts=['mousemove','mousedown','keydown','touchstart','scroll','click'];
     evts.forEach(function(e){window.addEventListener(e,reset,{passive:true});});
     reset();
     return function(){
-      clearTimeout(timer);
+      clearTimeout(timer);clearTimeout(wtimer);
       evts.forEach(function(e){window.removeEventListener(e,reset);});
     };
   },[sessionTimeout]);
 
+  // ── Online/offline detection ──
+  var _online=useState(navigator.onLine!==false);var online=_online[0];var setOnline=_online[1];
+  useEffect(function(){
+    function up(){setOnline(true);}
+    function down(){setOnline(false);}
+    window.addEventListener('online',up);
+    window.addEventListener('offline',down);
+    return function(){window.removeEventListener('online',up);window.removeEventListener('offline',down);};
+  },[]);
+
+  function backupDatabase(silent){
+    return Promise.all([
+      supa.from('mh_categories').select('*'),
+      supa.from('mh_menu').select('*'),
+      supa.from('mh_customers').select('*'),
+      supa.from('mh_users').select('*'),
+      supa.from('mh_config').select('*')
+    ]).then(function(res){
+      for(var i=0;i<res.length;i++){if(res[i].error)throw new Error(sbErr(res[i].error));}
+      var dump={
+        exportedAt:new Date().toISOString(),
+        hotel:HOTEL_NAME,
+        version:1,
+        categories:res[0].data||[],
+        menu:res[1].data||[],
+        customers:res[2].data||[],
+        users:res[3].data||[],
+        config:res[4].data||[]
+      };
+      if(!silent){
+        var blob=new Blob([JSON.stringify(dump,null,2)],{type:'application/json'});
+        var url=URL.createObjectURL(blob);
+        var a=document.createElement('a');
+        a.href=url;a.download='gavthan-backup-'+new Date().toISOString().slice(0,10)+'.json';
+        document.body.appendChild(a);a.click();document.body.removeChild(a);
+        setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      }
+      return dump;
+    });
+  }
+
+  // ── Auto Google Drive backup ──
+  var _driveInterval=useState('off');var driveInterval=_driveInterval[0];var setDriveInterval=_driveInterval[1];
+  var _driveLast=useState(null);var driveLast=_driveLast[0];var setDriveLast=_driveLast[1];
+  // Load drive settings from config
+  useEffect(function(){
+    supa.from('mh_config').select('data').eq('id','app').maybeSingle().then(function(r){
+      if(r.data&&r.data.data){
+        if(r.data.data.driveInterval) setDriveInterval(r.data.data.driveInterval);
+        if(r.data.data.driveLast) setDriveLast(r.data.data.driveLast);
+      }
+    },function(){});
+  },[]);
+  // Periodic check (every 5 minutes) — runs auto-backup if interval elapsed
+  useEffect(function(){
+    if(driveInterval==='off'||!Drive.configured())return;
+    var intMs={daily:86400e3,weekly:7*86400e3,monthly:30*86400e3}[driveInterval]||0;
+    if(!intMs)return;
+    function check(){
+      var last=driveLast?new Date(driveLast).getTime():0;
+      if(Date.now()-last<intMs)return;
+      if(!Drive.getToken())return; // skip silent run if not authorized
+      backupDatabase(true).then(function(dump){return Drive.upload(dump);}).then(function(){
+        var nowIso=new Date().toISOString();
+        setDriveLast(nowIso);
+        return supa.from('mh_config').select('data').eq('id','app').maybeSingle().then(function(r){
+          var cfg=(r.data&&r.data.data)||{};cfg.driveLast=nowIso;
+          return supa.from('mh_config').upsert({id:'app',data:cfg});
+        });
+      }).catch(function(e){console.error('Auto backup failed:',e);});
+    }
+    check();
+    var t=setInterval(check,5*60*1000);
+    return function(){clearInterval(t);};
+  },[driveInterval,driveLast]);
+
+  function saveDriveInterval(iv){
+    setDriveInterval(iv);
+    supa.from('mh_config').select('data').eq('id','app').maybeSingle().then(function(r){
+      var cfg=(r.data&&r.data.data)||{};cfg.driveInterval=iv;
+      return supa.from('mh_config').upsert({id:'app',data:cfg});
+    }).catch(showErr);
+  }
+
+  function restoreFromBackup(dump,onLog){
+    function log(msg){if(onLog)onLog(msg);console.log('[restore]',msg);}
+    if(!dump||typeof dump!=='object'){return Promise.reject(new Error('Invalid backup file.'));}
+    var cats=dump.categories||[];
+    var menu=dump.menu||[];
+    var custs=dump.customers||[];
+    var usrs=dump.users||[];
+    var cfg=dump.config||[];
+
+    // Integrity: collect every category referenced by menu items; auto-add missing ones
+    var catRow=cats.find(function(r){return r.id==='main';})||{id:'main',list:[]};
+    var catList=Array.isArray(catRow.list)?catRow.list.slice():[];
+    menu.forEach(function(m){
+      if(m.cat&&catList.indexOf(m.cat)===-1){catList.push(m.cat);log('Auto-added missing category: '+m.cat);}
+    });
+    catRow.list=catList;
+
+    // Integrity: customers reference items snapshot, so no FK to menu needed.
+    // Sanity-fill missing fields so inserts don't fail on NOT NULL.
+    custs.forEach(function(c){
+      if(!c.status) c.status='settled';
+      if(!c.items) c.items=[];
+      if(!c.date) c.date=new Date().toISOString();
+      if(!c.added_by) c.added_by='restored@backup';
+    });
+
+    log('Restoring '+catList.length+' categories, '+menu.length+' items, '+custs.length+' orders, '+usrs.length+' users…');
+    var ops=[
+      supa.from('mh_categories').upsert(catRow),
+      menu.length?supa.from('mh_menu').upsert(menu):Promise.resolve({error:null}),
+      custs.length?supa.from('mh_customers').upsert(custs):Promise.resolve({error:null}),
+      usrs.length?supa.from('mh_users').upsert(usrs):Promise.resolve({error:null}),
+      cfg.length?supa.from('mh_config').upsert(cfg):Promise.resolve({error:null})
+    ];
+    return Promise.all(ops).then(function(rs){
+      var errs=[];
+      ['categories','menu','customers','users','config'].forEach(function(nm,i){
+        if(rs[i]&&rs[i].error){errs.push(nm+': '+sbErr(rs[i].error));}
+      });
+      if(errs.length){log('Errors: '+errs.join('; '));throw new Error(errs.join('\n'));}
+      log('Restore complete.');
+      return fetchAll();
+    });
+  }
+
   function saveSessionTimeout(mins){
     var m=Math.max(1,Number(mins)||30);
     setSessionTimeout(m);
-    supa.from('mh_config').upsert({id:'app',data:{sessionTimeout:m}})
-      .then(function(r){if(r.error)showErr(new Error(sbErr(r.error)));})
+    // Merge into existing config so other keys (lastBillNo) aren't wiped
+    supa.from('mh_config').select('data').eq('id','app').maybeSingle()
+      .then(function(r){
+        var cfg=(r.data&&r.data.data)||{};
+        cfg.sessionTimeout=m;
+        return supa.from('mh_config').upsert({id:'app',data:cfg});
+      })
+      .then(function(r){if(r&&r.error)showErr(new Error(sbErr(r.error)));})
       .catch(showErr);
   }
 
@@ -448,22 +689,30 @@ function App(props){
       .catch(function(e){showErr(e);fetchAll();});
   }
   function upsertItem(cid,mid,delta){
-    var cust=custs.find(function(c){return c.id===cid;});
-    if(!cust)return;
-    var items=cust.items.slice();
-    var idx=items.findIndex(function(i){return i.id===mid;});
-    if(idx!==-1){
-      items[idx]=Object.assign({},items[idx],{qty:Math.max(0,items[idx].qty+delta)});
-      items=items.filter(function(i){return i.qty>0;});
-    } else {
-      var mi=menu.find(function(m){return m.id===mid;});
-      if(!mi||delta<1)return;
-      items.push({id:mi.id,name:mi.name,cat:mi.cat,price:mi.price,qty:1});
-    }
-    // Optimistic local update
-    setCusts(function(p){return p.map(function(c){return c.id===cid?Object.assign({},c,{items:items}):c;});});
-    supa.from('mh_customers').update({items:items}).eq('id',cid)
-      .then(function(r){if(r.error)throw new Error(sbErr(r.error));})
+    // Re-fetch the latest row first so two staff editing the same order don't overwrite each other
+    supa.from('mh_customers').select('items').eq('id',cid).maybeSingle()
+      .then(function(r){
+        var live=(r.data&&r.data.items)||[];
+        var items=live.slice();
+        var idx=items.findIndex(function(i){return i.id===mid;});
+        var nowIso=new Date().toISOString();
+        if(idx!==-1){
+          var ex=items[idx];
+          var times=itemTimes(ex).slice();
+          if(delta>0){ for(var k=0;k<delta;k++) times.push(nowIso); }
+          else { for(var j=0;j<-delta;j++) times.pop(); }
+          items[idx]=Object.assign({},ex,{qty:times.length,times:times});
+          delete items[idx].addedAt; // drop legacy field
+          items=items.filter(function(i){return (i.qty||0)>0;});
+        } else {
+          var mi=menu.find(function(m){return m.id===mid;});
+          if(!mi||delta<1)return;
+          items.push({id:mi.id,name:mi.name,cat:mi.cat,price:mi.price,qty:delta,times:Array.apply(null,{length:delta}).map(function(){return nowIso;})});
+        }
+        setCusts(function(p){return p.map(function(c){return c.id===cid?Object.assign({},c,{items:items}):c;});});
+        return supa.from('mh_customers').update({items:items,updated_at:nowIso}).eq('id',cid);
+      })
+      .then(function(r){if(r&&r.error)throw new Error(sbErr(r.error));})
       .catch(function(e){showErr(e);fetchAll();});
   }
   function settle(cid){
@@ -476,7 +725,17 @@ function App(props){
     }
     if(!confirm('Settle this customer?'))return;
     var now=new Date().toISOString();
-    supa.from('mh_customers').update({status:'settled',settled_at:now}).eq('id',cid)
+    // Assign a sequential bill number from the mh_config counter
+    supa.from('mh_config').select('data').eq('id','app').maybeSingle()
+      .then(function(r){
+        var cfg=(r.data&&r.data.data)||{};
+        var nextNo=(Number(cfg.lastBillNo)||0)+1;
+        cfg.lastBillNo=nextNo;
+        return supa.from('mh_config').upsert({id:'app',data:cfg}).then(function(){return nextNo;});
+      })
+      .then(function(nextNo){
+        return supa.from('mh_customers').update({status:'settled',settled_at:now,bill_no:nextNo}).eq('id',cid);
+      })
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
       .then(function(){if(selId===cid)setSelId(null);})
       .catch(showErr);
@@ -520,6 +779,11 @@ function App(props){
   }
   function deleteMenuItem(id){
     supa.from('mh_menu').delete().eq('id',id)
+      .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
+      .catch(showErr);
+  }
+  function toggleMenuAvail(id,avail){
+    supa.from('mh_menu').update({available:avail}).eq('id',id)
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
       .catch(showErr);
   }
@@ -603,6 +867,10 @@ function App(props){
   if(superAdmin){tabs.push(['users','Users']);}
 
   return h('div',{className:'wrap'},
+    !online&&h('div',{style:{background:'#991B1B',color:'#fff',padding:'6px 12px',fontSize:12,fontWeight:600,textAlign:'center'}},
+      '⚠ You are offline — changes will not be saved until the connection returns.'),
+    idleWarn&&online&&h('div',{style:{background:'#B45309',color:'#fff',padding:'6px 12px',fontSize:12,fontWeight:600,textAlign:'center'}},
+      '⏱ You will be logged out in 1 minute due to inactivity. Move the mouse or tap to stay signed in.'),
     h('div',{className:'hdr'},
       h('div',{className:'logo'},h('em',null,'Gavthan')),
       h('div',{className:'nav'},tabs.map(function(t){
@@ -624,9 +892,9 @@ function App(props){
       tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment,updateCustomer}),
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs,admin}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
-      tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem}),
+      tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem,toggleMenuAvail}),
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
-      tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout})
+      tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout,backupDatabase,restoreFromBackup,driveInterval,saveDriveInterval,driveLast})
     ),
     billCust&&h(BillModal,{cust:billCust,cats,onClose:function(){setBillId(null);},
       updateCustomer:updateCustomer,
@@ -671,18 +939,45 @@ function OrderPanel(props){
   var _adj=useState(String(cust.adjustment||''));var adj=_adj[0];var setAdj=_adj[1];
   var _reason=useState(cust.reason||'');var reason=_reason[0];var setReason=_reason[1];
   var reasonNeeded=!!(cust.discount_on||cust.adjustment_on);
-  var filtered=menu.filter(function(m){return m.cat===cat&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
+  var filtered=menu.filter(function(m){return m.cat===cat&&m.available!==false&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
   var raw=rawTotal(cust);
   var dAmt=discountAmt(cust);
   var aAmt=adjustAmt(cust);
   var grand=finalTotal(cust);
+  function printKOT(){
+    if(!cust.items.length){alert('No items to send to kitchen.');return;}
+    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:14px;padding:14px;max-width:300px;margin:0 auto}h2{text-align:center;font-size:17px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}.inf{font-size:12px;margin-bottom:2px}.it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}.q{min-width:36px;text-align:right}.tm{font-size:9px;color:#777;font-weight:normal}.foot{text-align:center;font-size:10px;color:#777;margin-top:10px}';
+    var rows=cust.items.map(function(i){
+      var tms=itemTimes(i);
+      var tStr=tms.length?'<br/><span class="tm">'+escHtml(tms.map(timeOf).join(' · '))+'</span>':'';
+      return'<div class="it"><span>'+escHtml(i.name)+tStr+'</span><span class="q">x'+(Number(i.qty)||0)+'</span></div>';
+    }).join('');
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>KOT_'+(cust.name||'').replace(/[^a-zA-Z0-9]/g,'')+'</title><style>'+css+'</style></head><body><h2>KITCHEN ORDER</h2><div class="sub">Gavthan — KOT</div><div class="inf"><b>'+escHtml(cust.name)+'</b> &nbsp; Room/Table: <b>'+escHtml(cust.room)+'</b></div><div class="inf">'+escHtml(dateOf(cust.date))+' &nbsp; '+escHtml(timeStr())+'</div><hr/>'+rows+'<div class="foot">--- Prepare above items ---</div></body></html>';
+    var iframe=document.createElement('iframe');
+    iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(iframe);
+    var doc=iframe.contentDocument||iframe.contentWindow.document;
+    doc.open();doc.write(html);doc.close();
+    var prevTitle=document.title;document.title='KOT_'+(cust.name||'');
+    setTimeout(function(){
+      try{iframe.contentWindow.focus();iframe.contentWindow.print();}catch(e){alert('Print failed: '+e.message);}
+      setTimeout(function(){document.body.removeChild(iframe);document.title=prevTitle;},2000);
+    },300);
+  }
   return h('div',{onClick:function(e){e.stopPropagation();}},
     h('div',{className:'hr'}),
     cust.items.length>0&&h('div',null,
       h('div',{className:'sb'},cust.items.map(function(it){
+        var tms=itemTimes(it);
         return h('div',{key:it.id,className:'li'},
           h(Chip,{cat:it.cat,cats}),
-          h('span',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},it.name),
+          h('div',{style:{flex:1,minWidth:0}},
+            h('div',{style:{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},it.name),
+            tms.length>0&&h('div',{style:{fontSize:9,color:'#9b9b97'}},
+              tms.length<=3
+                ? tms.map(timeOf).join(' · ')
+                : timeOf(tms[0])+' … '+timeOf(tms[tms.length-1])+' ('+tms.length+'×)')
+          ),
           h('button',{className:'qb',onClick:function(){upsertItem(cust.id,it.id,-1);}},'-'),
           h('span',{style:{minWidth:14,textAlign:'center'}},it.qty),
           h('button',{className:'qb',onClick:function(){upsertItem(cust.id,it.id,1);}},'+'),
@@ -764,6 +1059,7 @@ function OrderPanel(props){
     h('div',{className:'hr'}),
     h('div',{className:'row',style:{gap:5}},
       h('button',{className:'btn xs',onClick:function(){setBillId(cust.id);}},'🧾 Bill'),
+      h('button',{className:'btn xs',onClick:printKOT},'👨‍🍳 KOT'),
       h('button',{className:'btn btn-g xs',onClick:function(){settle(cust.id);}},'✓ Settle'),
       h('button',{className:'btn btn-r xs',onClick:function(){if(confirm('Delete?'))delCust(cust.id);}},'🗑')
     )
@@ -924,7 +1220,7 @@ function HistoryTab(props){
               h('div',{className:'row',style:{gap:4}},h('span',{style:{fontWeight:700,color:'#B45309'}},'₹'+t),
                 h('button',{className:'btn xs',onClick:function(){setBillId(c.id);}},'🧾 Bill'))
             ),
-            h('div',{className:'row',style:{gap:5}},h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.date)),h('span',{className:'tag-s'},'Settled')),
+            h('div',{className:'row',style:{gap:5}},h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.date)),h('span',{className:'tag-s'},'Settled'),c.bill_no&&h('span',{style:{fontSize:10,fontWeight:700,color:'#B45309'}},fmtBill(c.bill_no))),
             h('div',{style:{fontSize:11,color:'#6b6b67'}},c.items.slice(0,3).map(function(i){return i.name+'×'+i.qty;}).join(', ')+(c.items.length>3?', …':'')),
             (c.discount_on||c.adjustment_on)&&c.reason&&h('div',{style:{fontSize:11,color:'#B45309',fontStyle:'italic'}},'Reason: '+c.reason)
           );
@@ -963,11 +1259,11 @@ function HistoryTab(props){
   useEffect(function(){setPage(0);},[searchName,dateFrom,dateTo,selMonth,selYear,selStaff,filterMode]);
 
   function exportCSV(){
-    var headers=['Customer','Room','Phone','Created','Settled At','Items','Total','Reason','Staff'];
+    var headers=['Bill No','Customer','Room','Phone','Created','Settled At','Items','Total','Reason','Staff'];
     function esc(v){v=String(v==null?'':v).replace(/"/g,'""');return /[",\n]/.test(v)?'"'+v+'"':v;}
     var rows=shown.map(function(c){
       var itemsStr=(c.items||[]).map(function(i){return i.name+'x'+i.qty+'@'+i.price;}).join('; ');
-      return [c.name,c.room,c.phone||'',
+      return [c.bill_no||'',c.name,c.room,c.phone||'',
         c.date?new Date(c.date).toLocaleString('en-IN'):'',
         c.settled_at?new Date(c.settled_at).toLocaleString('en-IN'):'',
         itemsStr,finalTotal(c),(c.discount_on||c.adjustment_on)?(c.reason||''):'',c.added_by||''
@@ -991,6 +1287,35 @@ function HistoryTab(props){
       h('div',{className:'met'},h('div',{className:'ml'},"Today's Rev"),h('div',{className:'mv'},'₹'+todayRev)),
       h('div',{className:'met'},h('div',{className:'ml'},'Bills Today'),h('div',{className:'mv'},todaySett.length)),
       h('div',{className:'met'},h('div',{className:'ml'},'Total Rev'),h('div',{className:'mv'},'₹'+allRev))
+    ),
+    // Daily closing summary — per-staff breakdown for end-of-day reconciliation
+    h('div',{className:'card'},
+      h('div',{className:'ttl'},"Today's Closing Summary"),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:8}},new Date().toLocaleDateString('en-IN',{weekday:'long',day:'2-digit',month:'short',year:'numeric'})),
+      todaySett.length===0
+        ? h('div',{className:'muted',style:{fontSize:12}},'No bills settled today yet.')
+        : h('div',null,
+            (function(){
+              var byStaff={};
+              todaySett.forEach(function(c){
+                var k=c.added_by||'unknown';
+                if(!byStaff[k])byStaff[k]={count:0,rev:0};
+                byStaff[k].count++;byStaff[k].rev+=finalTotal(c);
+              });
+              return Object.keys(byStaff).map(function(k){
+                var su=(props.users||[]).find(function(u){return u.email===k;});
+                var nm=su?(su.display_name||k.split('@')[0]):k;
+                return h('div',{key:k,className:'row bw',style:{fontSize:12,padding:'4px 0',borderBottom:'1px dotted #e0ddd6'}},
+                  h('span',null,nm+' — '+byStaff[k].count+' bill'+(byStaff[k].count!==1?'s':'')),
+                  h('span',{style:{fontWeight:700,color:'#B45309'}},'₹'+byStaff[k].rev)
+                );
+              });
+            })(),
+            h('div',{className:'row bw',style:{fontSize:14,fontWeight:700,paddingTop:6,marginTop:2,borderTop:'2px solid #333'}},
+              h('span',null,'TOTAL — '+todaySett.length+' bill'+(todaySett.length!==1?'s':'')),
+              h('span',{style:{color:'#B45309'}},'₹'+todayRev)
+            )
+          )
     ),
     h('div',{className:'card'},
       h('div',{className:'row bw',style:{marginBottom:10,flexWrap:'wrap',gap:6}},
@@ -1044,7 +1369,7 @@ function HistoryTab(props){
             )
           ),
           h('div',{className:'row',style:{gap:5,flexWrap:'wrap'}},
-            c.settled_at&&h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.date)),
+            c.settled_at&&h('span',{className:'muted',style:{fontSize:10}},fmtDT(c.date)),c.bill_no&&h('span',{style:{fontSize:10,fontWeight:700,color:'#B45309'}},fmtBill(c.bill_no)),
             h('span',{className:'tag-s'},'Settled'),
             sn&&h('span',{style:{fontSize:10,color:'#6b6b67'}},'by '+sn)
           ),
@@ -1078,6 +1403,7 @@ function HistoryTab(props){
 function MenuTab(props){
   var cats=props.cats,saveCats=props.saveCats,menu=props.menu;
   var addMenuItem=props.addMenuItem,updateMenuItem=props.updateMenuItem,deleteMenuItem=props.deleteMenuItem;
+  var toggleMenuAvail=props.toggleMenuAvail;
   var _sel=useState(cats[0]||'');var selCat=_sel[0];var setSelCat=_sel[1];
   var _nc=useState('');var newCat=_nc[0];var setNewCat=_nc[1];
   var _eci=useState(null);var editCatId=_eci[0];var setEditCatId=_eci[1];
@@ -1136,10 +1462,12 @@ function MenuTab(props){
             ),
             h('div',{className:'row',style:{gap:4}},h('button',{className:'btn btn-a xs',onClick:doSaveItem},'✓ Save'),h('button',{className:'btn xs',onClick:function(){setEditId(null);}},'Cancel'))
           );
-          return h('div',{key:it.id,className:'li'},
-            h('span',{style:{flex:1}},it.name),
+          var avail=it.available!==false;
+          return h('div',{key:it.id,className:'li',style:{opacity:avail?1:0.55}},
+            h('span',{style:{flex:1}},it.name,!avail&&h('span',{style:{fontSize:10,color:'#991B1B',fontWeight:700,marginLeft:5}},'OUT OF STOCK')),
             h('span',{style:{fontWeight:700,color:'#B45309',minWidth:40,textAlign:'right'}},'₹'+it.price),
-            h('button',{className:'btn xs',style:{marginLeft:8},onClick:function(){setEditId(it.id);setEditN(it.name);setEditP(''+it.price);}},'✏ Edit'),
+            h('button',{className:'btn xs '+(avail?'btn-r':'btn-g'),style:{marginLeft:8},onClick:function(){toggleMenuAvail(it.id,!avail);}},avail?'Mark Out':'Mark In'),
+            h('button',{className:'btn xs',onClick:function(){setEditId(it.id);setEditN(it.name);setEditP(''+it.price);}},'✏ Edit'),
             h('button',{className:'btn btn-r xs',onClick:function(){deleteMenuItem(it.id);}},'🗑 Del')
           );
         })
@@ -1219,6 +1547,48 @@ function UsersTab(props){
   var toggleUserActive=props.toggleUserActive,changeUserRole=props.changeUserRole;
   var sendReset=props.sendReset,deleteUser=props.deleteUser;
   var sessionTimeout=props.sessionTimeout,saveSessionTimeout=props.saveSessionTimeout;
+  var backupDatabase=props.backupDatabase;
+  var restoreFromBackup=props.restoreFromBackup;
+  var driveInterval=props.driveInterval||'off',saveDriveInterval=props.saveDriveInterval,driveLast=props.driveLast;
+  var _restoreMsg=useState('');var restoreMsg=_restoreMsg[0];var setRestoreMsg=_restoreMsg[1];
+  var _driveMsg=useState('');var driveMsg=_driveMsg[0];var setDriveMsg=_driveMsg[1];
+  var _driveFiles=useState(null);var driveFiles=_driveFiles[0];var setDriveFiles=_driveFiles[1];
+  var _driveAuth=useState(!!Drive.getToken());var driveAuth=_driveAuth[0];var setDriveAuth=_driveAuth[1];
+  function doRestoreFile(e){
+    var f=e.target.files&&e.target.files[0];if(!f)return;
+    if(!confirm('Restoring will OVERWRITE current data with the backup file contents. Continue?')){e.target.value='';return;}
+    var rd=new FileReader();
+    rd.onload=function(){
+      try{
+        var dump=JSON.parse(rd.result);
+        setRestoreMsg('Restoring…');
+        restoreFromBackup(dump,setRestoreMsg).then(function(){setRestoreMsg('✓ Restore complete.');}).catch(function(er){setRestoreMsg('Error: '+er.message);});
+      }catch(er){setRestoreMsg('Invalid JSON file: '+er.message);}
+    };
+    rd.readAsText(f);e.target.value='';
+  }
+  function driveConnect(){
+    setDriveMsg('Connecting to Google Drive…');
+    Drive.authorize().then(function(){setDriveAuth(true);setDriveMsg('✓ Connected to Drive.');}).catch(function(e){setDriveMsg('Error: '+e.message);});
+  }
+  function driveDisconnect(){
+    Drive.clearToken();setDriveAuth(false);setDriveFiles(null);setDriveMsg('Disconnected.');
+  }
+  function driveBackupNow(){
+    setDriveMsg('Backing up to Drive…');
+    backupDatabase(true).then(function(d){return Drive.upload(d);}).then(function(){
+      setDriveMsg('✓ Uploaded to Google Drive.');setDriveFiles(null);
+    }).catch(function(e){setDriveMsg('Error: '+e.message);});
+  }
+  function driveListBackups(){
+    setDriveMsg('Loading backup list…');
+    Drive.list().then(function(fs){setDriveFiles(fs);setDriveMsg(fs.length+' backup'+(fs.length!==1?'s':'')+' found.');}).catch(function(e){setDriveMsg('Error: '+e.message);});
+  }
+  function driveRestore(file){
+    if(!confirm('Restore from "'+file.name+'"?\nThis OVERWRITES current data.'))return;
+    setDriveMsg('Downloading and restoring…');
+    Drive.download(file.id).then(function(dump){return restoreFromBackup(dump,setDriveMsg);}).then(function(){setDriveMsg('✓ Restored from '+file.name);}).catch(function(e){setDriveMsg('Error: '+e.message);});
+  }
   var _to=useState(String(sessionTimeout||30));var toVal=_to[0];var setToVal=_to[1];
   useEffect(function(){setToVal(String(sessionTimeout||30));},[sessionTimeout]);
   var _ne=useState('');var newEmail=_ne[0];var setNewEmail=_ne[1];
@@ -1252,6 +1622,66 @@ function UsersTab(props){
         h('button',{className:'btn btn-a xs',onClick:function(){saveSessionTimeout(toVal);}},'Save')
       ),
       h('div',{className:'muted',style:{fontSize:10,marginTop:4}},'Currently: '+(sessionTimeout||30)+' min. Applies to all users.')
+    ),
+    // Backup & Restore card
+    h('div',{className:'card'},
+      h('div',{className:'ttl'},'Backup & Restore'),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:8}},'Manual JSON backup of menu, customers, orders, users, config.'),
+      h('div',{className:'row',style:{gap:6,flexWrap:'wrap'}},
+        h('button',{className:'btn btn-a xs',onClick:function(){backupDatabase().catch(function(e){setRestoreMsg('Error: '+e.message);});}},'⬇ Download Backup'),
+        h('label',{className:'btn btn-r xs',style:{cursor:'pointer'}},'⬆ Restore from File',
+          h('input',{type:'file',accept:'.json,application/json',style:{display:'none'},onChange:doRestoreFile}))
+      ),
+      restoreMsg&&h('div',{style:{marginTop:6,fontSize:11,color:restoreMsg.indexOf('✓')===0?'#166534':(restoreMsg.indexOf('Error')!==-1?'#991B1B':'#6b6b67'),whiteSpace:'pre-wrap'}},restoreMsg),
+      h('div',{className:'muted',style:{fontSize:10,marginTop:6}},'Restore handles missing categories by auto-creating them. Item references in past orders are snapshots so they survive menu changes.')
+    ),
+    // Google Drive sync card
+    h('div',{className:'card'},
+      h('div',{className:'ttl'},'Google Drive Auto-Backup'),
+      !Drive.configured()
+        ? h('div',{className:'muted',style:{fontSize:11}},
+            h('div',{style:{marginBottom:6}},'⚙ Not configured. To enable:'),
+            h('ol',{style:{paddingLeft:18,margin:0,fontSize:11}},
+              h('li',null,'Create OAuth Client ID at Google Cloud Console (Web application type)'),
+              h('li',null,'Add your app URL (e.g. https://you.github.io/...) to Authorized JavaScript origins'),
+              h('li',null,'Enable Google Drive API for the project'),
+              h('li',null,'Paste the Client ID into ',h('code',null,'window.GH_CONFIG.googleClientId'),' in the HTML')
+            )
+          )
+        : h('div',null,
+            h('div',{className:'row bw',style:{marginBottom:8}},
+              h('span',{style:{fontSize:12,fontWeight:600,color:driveAuth?'#166534':'#991B1B'}},
+                driveAuth?'● Connected':'○ Not connected'),
+              driveAuth
+                ? h('button',{className:'btn xs',onClick:driveDisconnect},'Disconnect')
+                : h('button',{className:'btn btn-a xs',onClick:driveConnect},'Connect to Drive')
+            ),
+            driveAuth&&h('div',null,
+              h('div',{className:'row',style:{gap:6,marginBottom:8,flexWrap:'wrap'}},
+                h('span',{style:{fontSize:12}},'Auto-backup:'),
+                h('select',{value:driveInterval,onChange:function(e){saveDriveInterval(e.target.value);},style:{padding:'4px 6px',fontSize:12}},
+                  ['off','daily','weekly','monthly'].map(function(o){return h('option',{key:o,value:o},o.charAt(0).toUpperCase()+o.slice(1));})
+                ),
+                h('button',{className:'btn btn-g xs',onClick:driveBackupNow},'⬆ Backup Now'),
+                h('button',{className:'btn xs',onClick:driveListBackups},'📂 List Backups')
+              ),
+              driveLast&&h('div',{className:'muted',style:{fontSize:10,marginBottom:6}},'Last auto-backup: '+fmtDT(driveLast)),
+              driveFiles&&h('div',{style:{maxHeight:200,overflowY:'auto',border:'1px solid #e0ddd6',borderRadius:6,padding:4}},
+                driveFiles.length===0
+                  ? h('div',{className:'muted',style:{fontSize:11,padding:6}},'No backups in Drive yet.')
+                  : driveFiles.map(function(f){
+                      return h('div',{key:f.id,className:'row bw',style:{padding:'5px 6px',fontSize:11,borderBottom:'1px dotted #e0ddd6'}},
+                        h('div',{style:{flex:1,minWidth:0}},
+                          h('div',{style:{fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},f.name),
+                          h('div',{className:'muted',style:{fontSize:10}},fmtDT(f.createdTime)+(f.size?' · '+Math.round(f.size/1024)+' KB':''))
+                        ),
+                        h('button',{className:'btn xs btn-r',onClick:function(){driveRestore(f);}},'Restore')
+                      );
+                    })
+              )
+            ),
+            driveMsg&&h('div',{style:{marginTop:6,fontSize:11,color:driveMsg.indexOf('✓')!==-1?'#166534':(driveMsg.indexOf('Error')!==-1?'#991B1B':'#6b6b67'),whiteSpace:'pre-wrap'}},driveMsg)
+          )
     ),
     h('div',{className:'card'},
       h('div',{className:'row bw',style:{marginBottom:10}},
@@ -1330,7 +1760,7 @@ function BillModal(props){
     var lines=[];
     // Header
     lines.push('*GAVTHAN*');
-    lines.push('_Receipt / Bill_');
+    lines.push('_Receipt / Bill'+(cust.bill_no?' '+fmtBill(cust.bill_no):'')+'_');
     lines.push('');
     lines.push('Customer: *'+cust.name+'*');
     lines.push('Room/Table: *'+cust.room+'*');
@@ -1390,6 +1820,7 @@ function BillModal(props){
 
   function sendWhatsApp(){
     if(t===0){alert('Cannot send a zero-amount bill. Add items first.');return;}
+    stampBillTime();
     ensurePhone(function(phone){
       // wa.me with phone → opens WhatsApp with that contact pre-selected
       // (Web Share API with image looked nicer but didn't pre-fill recipient)
@@ -1406,8 +1837,13 @@ function BillModal(props){
       window.location.href=url;
     });
   }
+  function stampBillTime(){
+    if(cust.bill_time)return; // already stamped
+    if(updateCustomer) updateCustomer(cust.id,{bill_time:new Date().toISOString()});
+  }
   function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
+    stampBillTime();
     var bill=buildBillHTML();
     // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
     var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
@@ -1441,36 +1877,42 @@ function BillModal(props){
       if(cust.adjustment_on&&aA!==0) breakdown+='<div class="sl"><span>Adjustment</span><span>'+(aA>0?'+':'')+'&#8377;'+aA+'</span></div>';
       if(cust.reason) breakdown+='<div class="sl" style="color:#666;font-style:italic"><span>Reason:</span><span>'+escHtml(cust.reason)+'</span></div>';
     }
-    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill</div><div class="inf"><span><b>'+escHtml(cust.name)+'</b></span><span>'+escHtml(dateOf(cust.date))+'</span></div><div class="inf"><span>Room/Table: <b>'+escHtml(cust.room)+'</b></span><span>'+escHtml(timeOf(cust.date))+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+escHtml(cust.phone)+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+escHtml(UPI_ID)+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
+    // Date/time shown on the bill = bill_time (generation time) if set, else order creation date
+    var billTs=cust.bill_time||cust.date;
+    var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill'+(cust.bill_no?' '+fmtBill(cust.bill_no):'')+'</div><div class="inf"><span><b>'+escHtml(cust.name)+'</b></span><span>'+escHtml(dateOf(billTs))+'</span></div><div class="inf"><span>Room/Table: <b>'+escHtml(cust.room)+'</b></span><span>'+escHtml(timeOf(billTs))+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+escHtml(cust.phone)+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+escHtml(UPI_ID)+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
     return {css:css,body:body};
   }
 
   function saveJPEG(){
     if(t===0){alert('Cannot save a zero-amount bill. Add items first.');return;}
     if(typeof html2canvas==='undefined'){alert('Image library not loaded. Check your internet connection and reload.');return;}
+    stampBillTime();
     var bill=buildBillHTML();
-    // Render the exact receipt layout in an offscreen container, then capture it
-    var holder=document.createElement('div');
-    holder.style.cssText='position:fixed;left:-9999px;top:0;width:320px;background:#fff';
-    holder.innerHTML='<style scoped>'+bill.css.replace(/body\{/,'.gh-bill{')+'</style><div class="gh-bill">'+bill.body+'</div>';
-    document.body.appendChild(holder);
-    var target=holder.querySelector('.gh-bill');
-    // scale:2 keeps text sharp on phones while keeping the file small
-    html2canvas(target,{backgroundColor:'#ffffff',scale:2}).then(function(canvas){
-      var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t+'.jpg';
-      canvas.toBlob(function(blob){
-        document.body.removeChild(holder);
-        if(!blob){alert('Could not generate image.');return;}
-        var url=URL.createObjectURL(blob);
-        var a=document.createElement('a');
-        a.href=url;a.download=fname;
-        document.body.appendChild(a);a.click();document.body.removeChild(a);
-        setTimeout(function(){URL.revokeObjectURL(url);},1000);
-      },'image/jpeg',0.85);
-    }).catch(function(e){
-      if(holder.parentNode) document.body.removeChild(holder);
-      alert('Image export failed: '+e.message);
-    });
+    // Render in an iframe with the IDENTICAL HTML used for print → pixel-perfect match
+    var iframe=document.createElement('iframe');
+    iframe.style.cssText='position:fixed;left:-9999px;top:0;width:380px;height:1200px;border:0;background:#fff';
+    document.body.appendChild(iframe);
+    var doc=iframe.contentDocument||iframe.contentWindow.document;
+    var fullHtml='<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>'+bill.css+'</style></head><body>'+bill.body+'</body></html>';
+    doc.open();doc.write(fullHtml);doc.close();
+    setTimeout(function(){
+      var body=doc.body;
+      html2canvas(body,{backgroundColor:'#ffffff',scale:2,width:body.scrollWidth,height:body.scrollHeight,windowWidth:body.scrollWidth,windowHeight:body.scrollHeight}).then(function(canvas){
+        var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t+'.jpg';
+        canvas.toBlob(function(blob){
+          document.body.removeChild(iframe);
+          if(!blob){alert('Could not generate image.');return;}
+          var url=URL.createObjectURL(blob);
+          var a=document.createElement('a');
+          a.href=url;a.download=fname;
+          document.body.appendChild(a);a.click();document.body.removeChild(a);
+          setTimeout(function(){URL.revokeObjectURL(url);},1000);
+        },'image/jpeg',0.9);
+      }).catch(function(e){
+        if(iframe.parentNode) document.body.removeChild(iframe);
+        alert('Image export failed: '+e.message);
+      });
+    },200);
   }
   return h('div',{className:'ovl',onClick:onClose},
     h('div',{className:'modal',onClick:function(e){e.stopPropagation();}},
