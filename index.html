@@ -91,15 +91,14 @@ window.GH_CONFIG = {
   // UPI payment — leave blank to disable UPI link on bills
   upiId:     "9503019681-3@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
   hotelName: "Gavthan",
-  partnerDiscount: 0,               // shown in customer's UPI app
-  googleClientId: "968629668475-c1u5t14r4dtd60js9mj5rt056ni4i4cs.apps.googleusercontent.com"
+  partnerDiscount: 0               // shown in customer's UPI app
 };
 // Emails that get Admin access — everyone else is Staff
 window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 </script>
-<!-- END OF EDITABLE SECTION -->
+<!-- END OF EDITABLE SECTION -->x
 <script>
-'use strict';	 
+'use strict';
 
 // ── CONFIG ─────────────────────────────────────────
 var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
@@ -110,58 +109,99 @@ var PARTNER_DISCOUNT= Number((window.GH_CONFIG||{}).partnerDiscount)||0;
 var GOOGLE_CLIENT_ID= (window.GH_CONFIG||{}).googleClientId  || '';
 var ADMIN_EMAILS    = ((window.GH_ADMINS)||[]).map(function(e){return e.toLowerCase();});
 
-// ── Google Drive backup helper ─────────────────────
+// ── Google Drive backup helper (server-side refresh token) ────────────
+// OAuth code flow with PKCE → Edge Function exchanges code for refresh+access tokens
+// → refresh token stored encrypted server-side → all devices share one Drive connection.
 var Drive=(function(){
-  var TOKEN_KEY='gh_drive_token';
+  var ACCESS_KEY='gh_drive_access';
   var FOLDER_NAME='Gavthan Backups';
-  function getToken(){
-    try{var s=sessionStorage.getItem(TOKEN_KEY);if(!s)return null;var o=JSON.parse(s);
-      if(o.exp&&Date.now()>o.exp)return null;return o.token;}catch(e){return null;}
+  function getAccess(){
+    try{var s=sessionStorage.getItem(ACCESS_KEY);if(!s)return null;var o=JSON.parse(s);
+      if(o.exp&&Date.now()>o.exp-30000)return null;return o.token;}catch(e){return null;}
   }
-  function setToken(t,expSec){
-    sessionStorage.setItem(TOKEN_KEY,JSON.stringify({token:t,exp:Date.now()+(expSec||3500)*1000}));
+  function setAccess(t,expSec){
+    sessionStorage.setItem(ACCESS_KEY,JSON.stringify({token:t,exp:Date.now()+(expSec||3500)*1000}));
   }
-  function clearToken(){sessionStorage.removeItem(TOKEN_KEY);}
+  function clearAccess(){sessionStorage.removeItem(ACCESS_KEY);}
   function configured(){return !!GOOGLE_CLIENT_ID;}
+  function edgeUrl(){
+    var url=(window.GH_CONFIG||{}).supabaseUrl||'';
+    url=url.replace(/\/rest\/v1\/?$/,'').replace(/\/$/,'');
+    return url+'/functions/v1/drive-token';
+  }
+  function callEdge(action,body){
+    // Supabase session JWT is required so the function can verify the caller
+    return supa.auth.getSession().then(function(r){
+      var jwt=r&&r.data&&r.data.session&&r.data.session.access_token;
+      if(!jwt) throw new Error('Sign in first.');
+      var payload=Object.assign({action:action},body||{});
+      return fetch(edgeUrl(),{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+jwt,'apikey':SUPABASE_KEY},
+        body:JSON.stringify(payload)
+      }).then(function(rs){return rs.json().then(function(j){if(!rs.ok)throw new Error(j.error||('HTTP '+rs.status));return j;});});
+    });
+  }
+  // PKCE helpers
+  function b64url(buf){return btoa(String.fromCharCode.apply(null,new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+  function genVerifier(){var a=new Uint8Array(48);crypto.getRandomValues(a);return b64url(a.buffer);}
+  function challenge(v){return crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)).then(b64url);}
   function authorize(){
     return new Promise(function(resolve,reject){
       if(!configured()){reject(new Error('Google Client ID not configured.'));return;}
-      if(typeof google==='undefined'||!google.accounts){reject(new Error('Google Identity Services not loaded. Check internet and reload.'));return;}
-      var client=google.accounts.oauth2.initTokenClient({
-        client_id:GOOGLE_CLIENT_ID,
-        scope:'https://www.googleapis.com/auth/drive.file',
-        callback:function(resp){
-          if(resp.error){
-            reject(new Error(resp.error+(resp.error_description?': '+resp.error_description:'')));
-            return;
+      if(typeof google==='undefined'||!google.accounts){reject(new Error('Google Identity Services not loaded.'));return;}
+      var redirectUri=window.location.origin+window.location.pathname;
+      var verifier=genVerifier();
+      challenge(verifier).then(function(chal){
+        // Code client returns an auth code we exchange server-side (where the client secret lives)
+        var client=google.accounts.oauth2.initCodeClient({
+          client_id:GOOGLE_CLIENT_ID,
+          scope:'https://www.googleapis.com/auth/drive.file',
+          ux_mode:'popup',
+          redirect_uri:redirectUri,
+          access_type:'offline',  // request refresh token
+          // Forces a fresh consent so Google returns a refresh_token (it won't on subsequent silent auths)
+          prompt:'consent',
+          code_challenge:chal,
+          code_challenge_method:'S256',
+          callback:function(resp){
+            if(resp.error){reject(new Error(resp.error+(resp.error_description?': '+resp.error_description:'')));return;}
+            callEdge('exchange',{code:resp.code,codeVerifier:verifier,redirectUri:redirectUri})
+              .then(function(out){
+                if(!out.access_token){reject(new Error('No access token returned. Re-try with a fresh consent.'));return;}
+                setAccess(out.access_token,out.expires_in);
+                resolve(out.access_token);
+              })
+              .catch(reject);
+          },
+          error_callback:function(err){
+            var t=(err&&err.type)||'unknown';
+            reject(new Error('OAuth failed ('+t+')'));
           }
-          setToken(resp.access_token,resp.expires_in);
-          resolve(resp.access_token);
-        },
-        error_callback:function(err){
-          // err.type can be: popup_closed, popup_failed_to_open, unknown
-          var msg=(err&&err.type)||'unknown';
-          var hint='';
-          if(msg==='popup_failed_to_open') hint=' — popup blocked by browser. Allow popups for this site.';
-          else if(msg==='popup_closed') hint=' — popup closed before completing.';
-          else hint=' — check that this domain is added to your OAuth Client\'s Authorized JavaScript origins in Google Cloud Console.';
-          reject(new Error('OAuth failed ('+msg+')'+hint));
-        }
-      });
-      try{client.requestAccessToken();}catch(e){reject(e);}
+        });
+        client.requestCode();
+      }).catch(reject);
     });
   }
   function ensureToken(){
-    var t=getToken();
+    var t=getAccess();
     if(t)return Promise.resolve(t);
-    return authorize();
+    // Try server-side refresh first; only re-auth if no stored credentials exist
+    return callEdge('refresh',{}).then(function(out){
+      if(!out.access_token)throw new Error('No token from refresh');
+      setAccess(out.access_token,out.expires_in);
+      return out.access_token;
+    }).catch(function(e){
+      // If no creds on server, the caller (UI) should prompt connect
+      throw e;
+    });
   }
   function api(path,opts){
     return ensureToken().then(function(tok){
       opts=opts||{};opts.headers=opts.headers||{};
       opts.headers.Authorization='Bearer '+tok;
       return fetch('https://www.googleapis.com/'+path,opts).then(function(r){
-        if(r.status===401){clearToken();throw new Error('Drive auth expired. Try again.');}
+        if(r.status===401){clearAccess();throw new Error('Drive auth expired. Try again.');}
         if(!r.ok)return r.text().then(function(tx){throw new Error('Drive '+r.status+': '+tx);});
         return r;
       });
@@ -202,7 +242,17 @@ var Drive=(function(){
   function download(fileId){
     return api('drive/v3/files/'+fileId+'?alt=media').then(function(r){return r.json();});
   }
-  return {configured:configured,authorize:authorize,upload:upload,list:list,download:download,clearToken:clearToken,getToken:getToken};
+  function checkStatus(){
+    return callEdge('status',{}).then(function(out){return !!out.connected;}).catch(function(){return false;});
+  }
+  function disconnect(){
+    clearAccess();
+    return callEdge('disconnect',{}).catch(function(){/* ignore */});
+  }
+  return {
+    configured:configured,authorize:authorize,upload:upload,list:list,download:download,
+    clearToken:clearAccess,getToken:getAccess,checkStatus:checkStatus,disconnect:disconnect
+  };
 })();
 
 var INIT_CATS = ['Breakfast','Veg','Non-Veg','Bhakri','Chapati','Cold Drinks','Water Bottle','Glasses'];
@@ -820,25 +870,30 @@ function App(props){
     var name=(newName||'').trim();
     if(!email||!pass||!name){cb('Email, password, and name are all required.');return;}
     var role=isAdminEmail(email)?'admin':'user';
+    var createdAuth=false;
     secSupa.auth.signUp({email:email,password:pass,options:{data:{display_name:name}}})
       .then(function(r){
-        if(r.error)throw new Error(r.error.message);
+        if(r.error)throw new Error('Auth signup: '+r.error.message);
         var u=r.data&&r.data.user;
         if(!u||!u.id){
           throw new Error('User creation did not return a valid account. The email may already be registered, or email confirmation may need to be disabled in Supabase → Authentication → Sign In / Providers → Email.');
         }
-        // Duplicate-email detection: Supabase returns user with identities=[] when email already exists
         if(Array.isArray(u.identities)&&u.identities.length===0){
           throw new Error('This email is already registered. Use the existing user or pick a different email.');
         }
-        return supa.from('mh_users').insert({id:u.id,email:email,display_name:name,role:role,active:true});
+        createdAuth=true;
+        // upsert so a leftover/stale row doesn't break the flow
+        return supa.from('mh_users').upsert({id:u.id,email:email,display_name:name,role:role,active:true},{onConflict:'id'});
       })
       .then(function(r){
-        if(r&&r.error)throw new Error(sbErr(r.error));
+        if(r&&r.error){
+          console.error('[addUser] mh_users upsert failed:',r.error);
+          throw new Error('Database write failed: '+sbErr(r.error)+(createdAuth?' (auth user was created — they can still confirm and log in; admin auto-create will run)':''));
+        }
         return secSupa.auth.signOut();
       })
-      .then(function(){fetchAll();cb(null,'User "'+name+'" added!');})
-      .catch(function(e){cb(e.message);});
+      .then(function(){fetchAll();cb(null,'User "'+name+'" added! A confirmation email has been sent to '+email+'.');})
+      .catch(function(e){console.error('[addUser]',e);cb(e.message);});
   }
   function toggleUserActive(id,current){
     supa.from('mh_users').update({active:!current}).eq('id',id)
@@ -1608,6 +1663,11 @@ function UsersTab(props){
   var _driveMsg=useState('');var driveMsg=_driveMsg[0];var setDriveMsg=_driveMsg[1];
   var _driveFiles=useState(null);var driveFiles=_driveFiles[0];var setDriveFiles=_driveFiles[1];
   var _driveAuth=useState(!!Drive.getToken());var driveAuth=_driveAuth[0];var setDriveAuth=_driveAuth[1];
+  // Check the server-side connection status on mount (a refresh token may exist even on a new device)
+  useEffect(function(){
+    if(!Drive.configured())return;
+    Drive.checkStatus().then(function(connected){if(connected)setDriveAuth(true);});
+  },[]);
   function doRestoreFile(e){
     var f=e.target.files&&e.target.files[0];if(!f)return;
     if(!confirm('Restoring will OVERWRITE current data with the backup file contents. Continue?')){e.target.value='';return;}
@@ -1626,7 +1686,9 @@ function UsersTab(props){
     Drive.authorize().then(function(){setDriveAuth(true);setDriveMsg('✓ Connected to Drive.');}).catch(function(e){setDriveMsg('Error: '+e.message);});
   }
   function driveDisconnect(){
-    Drive.clearToken();setDriveAuth(false);setDriveFiles(null);setDriveMsg('Disconnected.');
+    if(!confirm('Disconnect Google Drive? This removes the stored refresh token from the server — all devices will need to reconnect.'))return;
+    setDriveMsg('Disconnecting…');
+    Drive.disconnect().then(function(){setDriveAuth(false);setDriveFiles(null);setDriveMsg('Disconnected.');});
   }
   function driveBackupNow(){
     setDriveMsg('Backing up to Drive…');
