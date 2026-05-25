@@ -390,16 +390,16 @@ input:focus,select:focus{outline:none;border-color:#B45309}
 ================================================================ -->
 <script>
 window.GH_CONFIG = {
-  supabaseUrl: "https://glaksnwcmiijiztsncvi.supabase.co",
-  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
+  supabaseUrl: "https://hjghjgjgj.supabase.co",
+  supabaseKey: "kljlkljljjlljlljljljlkkljlj",
   // UPI payment — leave blank to disable UPI link on bills
-  upiId:     "9503019681-3@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
+  upiId:     "9988886655@ybl",    // e.g. "gavthan@okaxis", "9876543210@paytm"
   hotelName: "Gavthan",
   partnerDiscount: 0,               // shown in customer's UPI app
-  googleClientId: "968629668475-c1u5t14r4dtd60js9mj5rt056ni4i4cs.apps.googleusercontent.com"
+  googleClientId: "khkjhjkhjkkhhkhhk.apps.googleusercontent.com"
 };
 // Emails that get Admin access — everyone else is Staff
-window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
+window.GH_ADMINS = ["elearningby@gmail.com"];
 </script>
 <!-- END OF EDITABLE SECTION -->x
 <script>
@@ -2317,7 +2317,7 @@ function BillModal(props){
     if(cust.bill_time)return; // already stamped
     if(updateCustomer) updateCustomer(cust.id,{bill_time:new Date().toISOString()});
   }
-  function printBill(){
+  /*function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     stampBillTime();
     var bill=buildBillHTML();
@@ -2340,10 +2340,80 @@ function BillModal(props){
         document.title=prevTitle;
       },2000);
     },300);
+  }*/
+
+  function printBill(){
+      if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
+      stampBillTime();
+      var bill = buildBillHTML();
+      var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
+      var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
+
+      var iframe = document.createElement('iframe');
+      // Make the iframe a full-screen overlay so the content renders correctly before printing
+      iframe.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999; background:white; border:none;';
+      document.body.appendChild(iframe);
+
+      var doc = iframe.contentDocument || iframe.contentWindow.document;
+      doc.open();
+      doc.write(html);
+      doc.close();
+
+      // Save the original page title (used as the PDF name by the browser)
+      var prevTitle = document.title;
+      document.title = fname;
+
+      // Wait a moment for the iframe to fully render, then print
+      setTimeout(function(){
+          try {
+              iframe.contentWindow.focus();
+              iframe.contentWindow.print();
+          } catch(e) {
+              alert('Print failed: ' + e.message);
+          }
+          // After the print dialog closes, clean up
+          setTimeout(function(){
+              document.body.removeChild(iframe);
+              document.title = prevTitle;
+          }, 2000);
+      }, 400);  // slightly longer delay to ensure rendering on slower devices
   }
+  
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
-    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+    /*var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+    */
+    var css = `
+      @page { size: auto; margin: 0mm; }
+      @media print {
+        body { 
+          width: 72mm; 
+          margin: 0 auto; 
+          padding: 2mm;
+          -webkit-print-color-adjust: exact;
+        }
+      }
+      body { 
+        font-family: "Courier New", monospace; 
+        font-size: 12px; 
+        line-height: 1.2;
+      }
+      h2 { text-align: center; font-size: 16px; margin: 5px 0 2px 0; }
+      .sub { text-align: center; font-size: 10px; border-bottom: 1px dashed #000; padding-bottom: 5px; margin-bottom: 10px; }
+      .inf { display: flex; justify-content: space-between; font-size: 11px; }
+      hr { border: none; border-top: 1px dashed #000; margin: 5px 0; }
+      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      th { border-bottom: 1px solid #000; text-align: left; font-size: 11px; }
+      td { padding: 2px 0; vertical-align: top; font-size: 11px; word-break: break-all; }
+      /* Fixed column widths to prevent Android overlapping */
+      th:nth-child(1), td:nth-child(1) { width: 40%; }
+      th:nth-child(2), td:nth-child(2) { width: 15%; text-align: right; }
+      th:nth-child(3), td:nth-child(3) { width: 20%; text-align: right; }
+      th:nth-child(4), td:nth-child(4) { width: 25%; text-align: right; }
+      .sl { display: flex; justify-content: space-between; font-size: 11px; }
+      .tot { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; border-top: 1px solid #000; margin-top: 5px; padding-top: 5px; }
+      .foot { text-align: center; font-size: 10px; margin-top: 10px; border-top: 1px dashed #000; padding-top: 5px; }
+    `;
     var rows=cust.items.map(function(i){return'<tr><td>'+escHtml(i.name)+'</td><td>'+(Number(i.qty)||0)+'</td><td>&#8377;'+(Number(i.price)||0)+'</td><td>&#8377;'+((Number(i.price)||0)*(Number(i.qty)||0))+'</td></tr>';}).join('');
     var dA=discountAmt(cust),aA=adjustAmt(cust);
     var breakdown='';
