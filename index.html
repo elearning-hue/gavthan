@@ -193,13 +193,44 @@
   var BT_CHAR_HINT = [0x2af1, 0xff01, 0xfff1];
 
   async function btConnect() {
-    if (!navigator.bluetooth) throw new Error('Web Bluetooth not available on this device/browser. Use Chrome on Android/Desktop, or use the WebSocket relay for iOS.');
-    var device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'XP' }, { namePrefix: 'Xprinter' }, { namePrefix: 'Printer' }, { namePrefix: 'POS' }],
-      optionalServices: BT_SERVICES
-    });
+    if (!navigator.bluetooth) {
+      throw new Error('Web Bluetooth is not available on this browser. Switch to "WebSocket relay" mode in Users → Thermal Printer Settings, or use Chrome/Edge on Android.');
+    }
+    // Some Android Chrome builds expose navigator.bluetooth but throw on requestDevice if globally disabled
+    try {
+      var available = true;
+      if (typeof navigator.bluetooth.getAvailability === 'function') {
+        available = await navigator.bluetooth.getAvailability();
+      }
+      if (!available) {
+        throw new Error('Bluetooth is turned off on this device. Turn on Bluetooth in system settings and try again.');
+      }
+    } catch (e) { if (e && e.message && /turned off/.test(e.message)) throw e; /* getAvailability not supported — proceed */ }
+    var device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'XP' }, { namePrefix: 'Xprinter' }, { namePrefix: 'Printer' }, { namePrefix: 'POS' }],
+        optionalServices: BT_SERVICES
+      });
+    } catch (e) {
+      var msg = (e && e.message) || '';
+      // "Web Bluetooth API globally disabled" comes from Chrome when the flag is off / policy blocks it
+      if (/globally disabled|user denied|not allowed|SecurityError/i.test(msg)) {
+        throw new Error(
+          'Web Bluetooth is disabled on this browser.\n\n' +
+          'TO FIX (Android Chrome):\n' +
+          '  1. Open Chrome → tap address bar → type:  chrome://flags\n' +
+          '  2. Search "Web Bluetooth" → set to Enabled\n' +
+          '  3. Relaunch Chrome\n\n' +
+          'OR use the WebSocket relay option in Users → Thermal Printer Settings (works without Bluetooth).'
+        );
+      }
+      if (/cancelled|User cancelled/i.test(msg)) {
+        throw new Error('You cancelled the printer picker. Try again and pick your printer.');
+      }
+      throw e;
+    }
     var server = await device.gatt.connect();
-    // Find a writable characteristic across known services
     var services = await server.getPrimaryServices();
     for (var i = 0; i < services.length; i++) {
       var chars = await services[i].getCharacteristics();
@@ -404,6 +435,7 @@ window.GH_ADMINS = ["elearningbykirtiwardhan@gmail.com","kirtiwardhan@live.in"];
 <!-- END OF EDITABLE SECTION -->x
 <script>
 'use strict';
+
 // ── CONFIG ─────────────────────────────────────────
 var SUPABASE_URL    = (window.GH_CONFIG||{}).supabaseUrl  || '';
 var SUPABASE_KEY    = (window.GH_CONFIG||{}).supabaseKey  || '';
@@ -1349,23 +1381,42 @@ function OrderPanel(props){
   var grand=finalTotal(cust);
   function printKOT(){
     if(!cust.items.length){alert('No items to send to kitchen.');return;}
-    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:14px;padding:14px;max-width:300px;margin:0 auto}h2{text-align:center;font-size:17px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}.inf{font-size:12px;margin-bottom:2px}.it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}.q{min-width:36px;text-align:right}.tm{font-size:9px;color:#777;font-weight:normal}.foot{text-align:center;font-size:10px;color:#777;margin-top:10px}';
+    var css='@page{size:80mm auto;margin:3mm}@media print{html,body{width:auto!important;max-width:none!important;margin:0!important;padding:0!important}}html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-text-size-adjust:none;text-size-adjust:none}*{box-sizing:border-box}body{font-family:"Courier New","Liberation Mono",Consolas,monospace;font-size:12pt;padding:3mm;max-width:74mm;margin:0 auto}h2{text-align:center;font-size:17px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}.inf{font-size:12px;margin-bottom:2px}.it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}.q{min-width:36px;text-align:right}.tm{font-size:9px;color:#777;font-weight:normal}.foot{text-align:center;font-size:10px;color:#777;margin-top:10px}';
     var rows=cust.items.map(function(i){
       var tms=itemTimes(i);
       var tStr=tms.length?'<br/><span class="tm">'+escHtml(tms.map(timeOf).join(' · '))+'</span>':'';
       return'<div class="it"><span>'+escHtml(i.name)+tStr+'</span><span class="q">x'+(Number(i.qty)||0)+'</span></div>';
     }).join('');
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>KOT_'+(cust.name||'').replace(/[^a-zA-Z0-9]/g,'')+'</title><style>'+css+'</style></head><body><h2>KITCHEN ORDER</h2><div class="sub">Gavthan — KOT</div><div class="inf"><b>'+escHtml(cust.name)+'</b> &nbsp; Room/Table: <b>'+escHtml(cust.room)+'</b></div><div class="inf">'+escHtml(dateOf(cust.date))+' &nbsp; '+escHtml(timeStr())+'</div><hr/>'+rows+'<div class="foot">--- Prepare above items ---</div></body></html>';
-    var iframe=document.createElement('iframe');
-    iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
-    document.body.appendChild(iframe);
-    var doc=iframe.contentDocument||iframe.contentWindow.document;
-    doc.open();doc.write(html);doc.close();
+    var bodyHtml='<h2>KITCHEN ORDER</h2><div class="sub">Gavthan — KOT</div><div class="inf"><b>'+escHtml(cust.name)+'</b> &nbsp; Room/Table: <b>'+escHtml(cust.room)+'</b></div><div class="inf">'+escHtml(dateOf(cust.date))+' &nbsp; '+escHtml(timeStr())+'</div><hr/>'+rows+'<div class="foot">--- Prepare above items ---</div>';
+    var STYLE_ID='__gh_kot_style__';
+    var CONT_ID='__gh_kot_container__';
+    var oldS=document.getElementById(STYLE_ID); if(oldS)oldS.remove();
+    var oldC=document.getElementById(CONT_ID); if(oldC)oldC.remove();
+    var scoped=css.replace(/(^|[\s,{}])body(\s*\{)/g,'$1#'+CONT_ID+'$2');
+    var style=document.createElement('style');
+    style.id=STYLE_ID;
+    style.textContent=
+      '#'+CONT_ID+'{display:none}'+
+      '@media print{'+
+        'html,body{margin:0!important;padding:0!important;background:#fff!important}'+
+        'body > *:not(#'+CONT_ID+'){display:none!important}'+
+        '#'+CONT_ID+'{display:block!important}'+
+      '}'+
+      scoped;
+    document.head.appendChild(style);
+    var container=document.createElement('div');
+    container.id=CONT_ID;
+    container.innerHTML=bodyHtml;
+    document.body.appendChild(container);
     var prevTitle=document.title;document.title='KOT_'+(cust.name||'');
     setTimeout(function(){
-      try{iframe.contentWindow.focus();iframe.contentWindow.print();}catch(e){alert('Print failed: '+e.message);}
-      setTimeout(function(){document.body.removeChild(iframe);document.title=prevTitle;},2000);
-    },300);
+      try{window.print();}catch(e){alert('Print failed: '+e.message);}
+      setTimeout(function(){
+        var c=document.getElementById(CONT_ID); if(c)c.remove();
+        var s=document.getElementById(STYLE_ID); if(s)s.remove();
+        document.title=prevTitle;
+      },1500);
+    },200);
   }
   return h('div',{onClick:function(e){e.stopPropagation();}},
     h('div',{className:'hr'}),
@@ -2086,8 +2137,10 @@ function UsersTab(props){
         h('input',{value:thermSettings.wsUrl||'',placeholder:'ws://lan-ip:8088',
           onChange:function(e){saveThermSettings(Object.assign({},thermSettings,{wsUrl:e.target.value}));}})
       ),
-      h('div',{className:'muted',style:{fontSize:10}},
-        ThermalPrinter.isBTSupported()?'✓ Web Bluetooth available on this device.':'⚠ Web Bluetooth NOT available (iOS/Safari) — use the WebSocket relay option.'
+      h('div',{className:'muted',style:{fontSize:10,whiteSpace:'pre-line'}},
+        ThermalPrinter.isBTSupported()
+          ? '✓ Web Bluetooth available on this device.\nIf you get "globally disabled" error: open chrome://flags, search "Web Bluetooth", enable it, then relaunch Chrome — OR switch to WebSocket relay.'
+          : '⚠ Web Bluetooth NOT available on this browser (iOS Safari / disabled Chrome).\nUse the WebSocket relay option — runs a tiny helper on any LAN device.'
       )
     ),
     // Backup & Restore card
@@ -2316,103 +2369,51 @@ function BillModal(props){
     if(cust.bill_time)return; // already stamped
     if(updateCustomer) updateCustomer(cust.id,{bill_time:new Date().toISOString()});
   }
-  /*function printBill(){
+  function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     stampBillTime();
     var bill=buildBillHTML();
-    // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
     var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+bill.css+'</style></head><body>'+bill.body+'</body></html>';
-    var iframe=document.createElement('iframe');
-    iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
-    document.body.appendChild(iframe);
-    var doc=iframe.contentDocument||iframe.contentWindow.document;
-    doc.open();doc.write(html);doc.close();
-    // Browsers use the PARENT document title for the "Save as PDF" filename
+    // Strategy: inject bill into the current document as a hidden div; use @media print to
+    // hide everything else and show only the bill. The hidden-iframe approach has a known
+    // Android Chrome bug that prints the parent page instead of the iframe contents.
+    var STYLE_ID='__gh_print_style__';
+    var CONT_ID='__gh_print_container__';
+    var oldS=document.getElementById(STYLE_ID); if(oldS)oldS.remove();
+    var oldC=document.getElementById(CONT_ID); if(oldC)oldC.remove();
+    // Scope the bill's own `body{...}` rules to the container so they don't leak to the app shell
+    var scoped=bill.css.replace(/(^|[\s,{}])body(\s*\{)/g,'$1#'+CONT_ID+'$2');
+    var style=document.createElement('style');
+    style.id=STYLE_ID;
+    style.textContent=
+      '#'+CONT_ID+'{display:none}'+
+      '@media print{'+
+        'html,body{margin:0!important;padding:0!important;background:#fff!important}'+
+        'body > *:not(#'+CONT_ID+'){display:none!important}'+
+        '#'+CONT_ID+'{display:block!important}'+
+      '}'+
+      scoped;
+    document.head.appendChild(style);
+    var container=document.createElement('div');
+    container.id=CONT_ID;
+    container.innerHTML=bill.body;
+    document.body.appendChild(container);
     var prevTitle=document.title;
     document.title=fname;
+    // Give the browser one frame to apply styles before opening the print dialog
     setTimeout(function(){
-      try{iframe.contentWindow.focus();iframe.contentWindow.print();}
+      try{window.print();}
       catch(e){alert('Print failed: '+e.message);}
       setTimeout(function(){
-        document.body.removeChild(iframe);
+        var c=document.getElementById(CONT_ID); if(c)c.remove();
+        var s=document.getElementById(STYLE_ID); if(s)s.remove();
         document.title=prevTitle;
-      },2000);
-    },300);
-  }*/
-
-  function printBill(){
-      if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
-      stampBillTime();
-      var bill = buildBillHTML();
-      var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
-      var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
-
-      var iframe = document.createElement('iframe');
-      // Make the iframe a full-screen overlay so the content renders correctly before printing
-      iframe.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999; background:white; border:none;';
-      document.body.appendChild(iframe);
-
-      var doc = iframe.contentDocument || iframe.contentWindow.document;
-      doc.open();
-      doc.write(html);
-      doc.close();
-
-      // Save the original page title (used as the PDF name by the browser)
-      var prevTitle = document.title;
-      document.title = fname;
-
-      // Wait a moment for the iframe to fully render, then print
-      setTimeout(function(){
-          try {
-              iframe.contentWindow.focus();
-              iframe.contentWindow.print();
-          } catch(e) {
-              alert('Print failed: ' + e.message);
-          }
-          // After the print dialog closes, clean up
-          setTimeout(function(){
-              document.body.removeChild(iframe);
-              document.title = prevTitle;
-          }, 2000);
-      }, 400);  // slightly longer delay to ensure rendering on slower devices
+      },1500);
+    },200);
   }
-  
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
-    /*var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
-    */
-    var css = `
-      @page { size: auto; margin: 0mm; }
-      @media print {
-        body { 
-          width: 72mm; 
-          margin: 0 auto; 
-          padding: 2mm;
-          -webkit-print-color-adjust: exact;
-        }
-      }
-      body { 
-        font-family: "Courier New", monospace; 
-        font-size: 12px; 
-        line-height: 1.2;
-      }
-      h2 { text-align: center; font-size: 16px; margin: 5px 0 2px 0; }
-      .sub { text-align: center; font-size: 10px; border-bottom: 1px dashed #000; padding-bottom: 5px; margin-bottom: 10px; }
-      .inf { display: flex; justify-content: space-between; font-size: 11px; }
-      hr { border: none; border-top: 1px dashed #000; margin: 5px 0; }
-      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-      th { border-bottom: 1px solid #000; text-align: left; font-size: 11px; }
-      td { padding: 2px 0; vertical-align: top; font-size: 11px; word-break: break-all; }
-      /* Fixed column widths to prevent Android overlapping */
-      th:nth-child(1), td:nth-child(1) { width: 40%; }
-      th:nth-child(2), td:nth-child(2) { width: 15%; text-align: right; }
-      th:nth-child(3), td:nth-child(3) { width: 20%; text-align: right; }
-      th:nth-child(4), td:nth-child(4) { width: 25%; text-align: right; }
-      .sl { display: flex; justify-content: space-between; font-size: 11px; }
-      .tot { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; border-top: 1px solid #000; margin-top: 5px; padding-top: 5px; }
-      .foot { text-align: center; font-size: 10px; margin-top: 10px; border-top: 1px dashed #000; padding-top: 5px; }
-    `;
+    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
     var rows=cust.items.map(function(i){return'<tr><td>'+escHtml(i.name)+'</td><td>'+(Number(i.qty)||0)+'</td><td>&#8377;'+(Number(i.price)||0)+'</td><td>&#8377;'+((Number(i.price)||0)*(Number(i.qty)||0))+'</td></tr>';}).join('');
     var dA=discountAmt(cust),aA=adjustAmt(cust);
     var breakdown='';
@@ -2427,7 +2428,7 @@ function BillModal(props){
     var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill'+(displayBillNo?' '+fmtBill(displayBillNo):'')+'</div><div class="inf"><span><b>'+escHtml(cust.name)+'</b></span><span>'+escHtml(dateOf(billTs))+'</span></div><div class="inf"><span>Room/Table: <b>'+escHtml(cust.room)+'</b></span><span>'+escHtml(timeOf(billTs))+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+escHtml(cust.phone)+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+escHtml(UPI_ID)+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
     return {css:css,body:body};
   }
-  
+
   function saveJPEG(){
     if(t===0){alert('Cannot save a zero-amount bill. Add items first.');return;}
     if(typeof html2canvas==='undefined'){alert('Image library not loaded. Check your internet connection and reload.');return;}
