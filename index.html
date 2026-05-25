@@ -682,7 +682,29 @@ function initCap(s){return(s||'').toLowerCase().replace(/\b\w/g,function(c){retu
 function todayCount(custs){var t=new Date().toDateString();return custs.filter(function(c){return new Date(c.date).toDateString()===t;}).length;}
 function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0;return(c==='x'?r:r&0x3|0x8).toString(16);});}
 
-function Chip(props){var c=clr(props.cat,props.cats);return h('span',{className:'chip',style:{background:c.bg,color:c.tx}},props.cat);}
+// Map known category names to a small icon. Falls back to a generic 🍽 for unknowns.
+function catIcon(cat){
+  var c=(cat||'').toLowerCase();
+  if(c.indexOf('break')!==-1) return '🍳';
+  if(c==='veg'||c.indexOf('veg')===0) return '🥗';
+  if(c.indexOf('non')!==-1&&c.indexOf('veg')!==-1) return '🍗';
+  if(c.indexOf('bhakri')!==-1) return '🌾';
+  if(c.indexOf('chapati')!==-1||c.indexOf('roti')!==-1) return '🫓';
+  if(c.indexOf('cold')!==-1||c.indexOf('drink')!==-1||c.indexOf('juice')!==-1||c.indexOf('soda')!==-1) return '🥤';
+  if(c.indexOf('water')!==-1) return '💧';
+  if(c.indexOf('glass')!==-1) return '🥃';
+  if(c.indexOf('tea')!==-1) return '🍵';
+  if(c.indexOf('coffee')!==-1) return '☕';
+  if(c.indexOf('rice')!==-1||c.indexOf('biryani')!==-1) return '🍚';
+  if(c.indexOf('dessert')!==-1||c.indexOf('sweet')!==-1) return '🍰';
+  if(c.indexOf('snack')!==-1||c.indexOf('starter')!==-1) return '🍿';
+  if(c.indexOf('soup')!==-1) return '🍲';
+  if(c.indexOf('curry')!==-1) return '🍛';
+  if(c.indexOf('seafood')!==-1||c.indexOf('fish')!==-1) return '🐟';
+  if(c.indexOf('egg')!==-1) return '🥚';
+  return '🍽';
+}
+function Chip(props){var c=clr(props.cat,props.cats);return h('span',{className:'chip',title:props.cat,style:{background:c.bg,color:c.tx,padding:'2px 6px',fontSize:14,minWidth:24,textAlign:'center'}},catIcon(props.cat));}
 
 // ── SUPABASE DATA LAYER ───────────────────────────
 function sbErr(e){return e&&(e.message||e.details||JSON.stringify(e));}
@@ -1210,30 +1232,25 @@ function App(props){
     var name=(newName||'').trim();
     if(!email||!pass||!name){cb('Email, password, and name are all required.');return;}
     var role=isAdminEmail(email)?'admin':'user';
-    var createdAuth=false;
-    secSupa.auth.signUp({email:email,password:pass,options:{data:{display_name:name}}})
-      .then(function(r){
-        if(r.error)throw new Error('Auth signup: '+r.error.message);
-        var u=r.data&&r.data.user;
-        if(!u||!u.id){
-          throw new Error('User creation did not return a valid account. The email may already be registered, or email confirmation may need to be disabled in Supabase → Authentication → Sign In / Providers → Email.');
-        }
-        if(Array.isArray(u.identities)&&u.identities.length===0){
-          throw new Error('This email is already registered. Use the existing user or pick a different email.');
-        }
-        createdAuth=true;
-        // upsert so a leftover/stale row doesn't break the flow
-        return supa.from('mh_users').upsert({id:u.id,email:email,display_name:name,role:role,active:true},{onConflict:'id'});
-      })
-      .then(function(r){
-        if(r&&r.error){
-          console.error('[addUser] mh_users upsert failed:',r.error);
-          throw new Error('Database write failed: '+sbErr(r.error)+(createdAuth?' (auth user was created — they can still confirm and log in; admin auto-create will run)':''));
-        }
-        return secSupa.auth.signOut();
-      })
-      .then(function(){fetchAll();cb(null,'User "'+name+'" added! A confirmation email has been sent to '+email+'.');})
-      .catch(function(e){console.error('[addUser]',e);cb(e.message);});
+    // Server-side atomic creation via user-admin Edge Function: handles dangling auth users,
+    // missing mh_users rows, and rolls back on partial failure so retry is always safe.
+    supa.auth.getSession().then(function(r){
+      var jwt=r&&r.data&&r.data.session&&r.data.session.access_token;
+      if(!jwt) throw new Error('Not signed in.');
+      var url=((window.GH_CONFIG||{}).supabaseUrl||'').replace(/\/rest\/v1\/?$/,'').replace(/\/$/,'')+'/functions/v1/user-admin';
+      return fetch(url,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+jwt,'apikey':SUPABASE_KEY},
+        body:JSON.stringify({action:'create-user',email:email,password:pass,displayName:name,role:role})
+      }).then(function(rs){return rs.json().then(function(j){
+        if(!rs.ok) throw new Error(j.error||('HTTP '+rs.status));
+        return j;
+      });});
+    }).then(function(j){
+      fetchAll();
+      var note=j.reused?' (linked to an existing auth account that was missing its app profile)':'';
+      cb(null,'User "'+name+'" added!'+note);
+    }).catch(function(e){console.error('[addUser]',e);cb(e.message);});
   }
   function toggleUserActive(id,current){
     supa.from('mh_users').update({active:!current}).eq('id',id)
@@ -1300,7 +1317,7 @@ function App(props){
   // superAdmin = strictly GH_ADMINS seeded emails → Users tab only
   var superAdmin=isAdminEmail(user.email);
   if(admin){tabs.push(['menu','Menu']);tabs.push(['customers','Cust']);}
-  if(superAdmin){tabs.push(['users','Users']);}
+  if(superAdmin){tabs.push(['users','Config']);}
 
   return h('div',{className:'wrap'},
     !online&&h('div',{style:{background:'#991B1B',color:'#fff',padding:'6px 12px',fontSize:12,fontWeight:600,textAlign:'center'}},
@@ -1415,7 +1432,7 @@ function OrderPanel(props){
   }
   return h('div',{onClick:function(e){e.stopPropagation();}},
     h('div',{className:'hr'}),
-    h('div',{className:'hr'}),
+    h('div',{style:{fontSize:11,color:'#B45309',fontWeight:700,letterSpacing:0.5,marginBottom:4}},'➕ ADD ITEMS'),
     h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
     h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',onClick:function(){setCat(c);}},c);})),
     h('div',{className:'sb'},filtered.length===0?h('div',{style:{fontSize:12,color:'#6b6b67',padding:8}},'No items.'):
@@ -1430,8 +1447,10 @@ function OrderPanel(props){
         );
       })
     ),
-    cust.items.length>0&&h('div',null,
-      h('div',{style:{fontSize:11,color:'#6b6b67',fontWeight:600,marginBottom:4,marginTop:4}},'CURRENT BILL'),
+    // ── Visible section divider between menu picker and current bill ──
+    cust.items.length>0&&h('div',{style:{borderTop:'2px dashed #B45309',marginTop:10,marginBottom:6,paddingTop:8}}),
+    cust.items.length>0&&h('div',{style:{background:'#FAEEDA',padding:'8px 10px',borderRadius:8,marginBottom:6}},
+      h('div',{style:{fontSize:11,color:'#27500A',fontWeight:700,letterSpacing:0.5,marginBottom:6}},'🧾 CURRENT ORDER'),
       h('div',{className:'sb'},cust.items.map(function(it){
         var tms=itemTimes(it);
         return h('div',{key:it.id,className:'li'},
