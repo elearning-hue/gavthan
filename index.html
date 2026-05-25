@@ -2369,7 +2369,7 @@ function BillModal(props){
     if(cust.bill_time)return; // already stamped
     if(updateCustomer) updateCustomer(cust.id,{bill_time:new Date().toISOString()});
   }
-  function printBill(){
+  /*function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     stampBillTime();
     var bill=buildBillHTML();
@@ -2410,7 +2410,41 @@ function BillModal(props){
         document.title=prevTitle;
       },1500);
     },200);
-  }
+  }*/
+  function printBill(){
+    if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
+    stampBillTime();
+    var bill = buildBillHTML();
+    var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
+    var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
+
+    // Open a popup window – must be called directly from a user click (which it is)
+    var printWindow = window.open('', '_blank', 'width=400,height=600,left=100,top=100');
+    if (!printWindow) {
+        alert('Popup blocked. Please allow popups for this site to print the bill.');
+        return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+
+    // Wait for the content to fully render, then trigger print
+    printWindow.onload = function() {
+        printWindow.focus();
+        printWindow.print();
+        // Cleanup: close the window after the print dialog closes (works on most browsers)
+        printWindow.onafterprint = function() {
+            printWindow.close();
+        };
+        // Fallback timeout in case onafterprint doesn't fire (some mobile browsers)
+        setTimeout(function() {
+            if (!printWindow.closed) {
+                printWindow.close();
+            }
+        }, 60000);
+    };
+}
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
