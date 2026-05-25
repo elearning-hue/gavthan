@@ -2418,32 +2418,51 @@ function BillModal(props){
     var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
     var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
 
-    // Open a popup window – must be called directly from a user click (which it is)
-    var printWindow = window.open('', '_blank', 'width=400,height=600,left=100,top=100');
+    // Open a small popup – must be called directly from the user click
+    var printWindow = window.open('', '_blank', 'width=400,height=600');
     if (!printWindow) {
         alert('Popup blocked. Please allow popups for this site to print the bill.');
         return;
     }
 
+    // Write the receipt into the popup
     printWindow.document.open();
     printWindow.document.write(html);
     printWindow.document.close();
 
-    // Wait for the content to fully render, then trigger print
-    printWindow.onload = function() {
+    // Core print logic
+    function triggerPrint() {
         printWindow.focus();
-        printWindow.print();
-        // Cleanup: close the window after the print dialog closes (works on most browsers)
-        printWindow.onafterprint = function() {
-            printWindow.close();
+
+        // Use matchMedia to reliably close the popup when the print dialog closes
+        var mediaQueryList = printWindow.matchMedia('print');
+        var closeWindow = function() {
+            if (!printWindow.closed) printWindow.close();
         };
-        // Fallback timeout in case onafterprint doesn't fire (some mobile browsers)
-        setTimeout(function() {
-            if (!printWindow.closed) {
-                printWindow.close();
+        mediaQueryList.addListener(function(mql) {
+            if (!mql.matches) {   // user has closed the print dialog
+                closeWindow();
             }
-        }, 60000);
-    };
+        });
+
+        // Trigger the browser's print dialog
+        printWindow.print();
+
+        // Fallback: if matchMedia isn't supported, close the popup after 2 minutes
+        setTimeout(function() {
+            if (!printWindow.closed) closeWindow();
+        }, 120000);
+    }
+
+    // If the document is already fully loaded, print after a tiny rendering delay.
+    // Otherwise, wait for the onload event.
+    if (printWindow.document.readyState === 'complete') {
+        setTimeout(triggerPrint, 200);
+    } else {
+        printWindow.onload = function() {
+            setTimeout(triggerPrint, 200);
+        };
+    }
 }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
