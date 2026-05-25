@@ -2411,16 +2411,16 @@ function BillModal(props){
       },1500);
     },200);
   }*/
-  function printBill(){
+function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     stampBillTime();
     var bill = buildBillHTML();
     var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
     var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
 
-    // Create an off-screen iframe – not zero-size, to prevent mobile from printing the parent DOM
+    // Off‑screen iframe with a real layout width so mobile doesn't fall back to the parent
     var iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed; left:-9999px; top:0; width: 80mm; height:auto; border:none; background:white;';
+    iframe.style.cssText = 'position:fixed; left:-9999px; top:0; width:80mm; height:auto; border:none; background:white;';
     document.body.appendChild(iframe);
 
     var doc = iframe.contentDocument || iframe.contentWindow.document;
@@ -2431,39 +2431,54 @@ function BillModal(props){
     var prevTitle = document.title;
     document.title = fname;
 
-    // Wait for the iframe to fully render, then print
+    // Function to safely remove the iframe and restore state
+    function cleanup() {
+        if (iframe.parentNode) {
+            document.body.removeChild(iframe);
+        }
+        document.title = prevTitle;
+    }
+
+    // When the iframe is fully loaded, set up print‑dialog‑closed detection and trigger print
     iframe.onload = function() {
-        // Small extra delay to be safe on slow devices
+        var iframeWindow = iframe.contentWindow;
+
+        // Detect when the print dialog closes using matchMedia
+        if (iframeWindow.matchMedia) {
+            var mediaQueryList = iframeWindow.matchMedia('print');
+            var handleChange = function(mql) {
+                if (!mql.matches) {
+                    // Print dialog has been closed (either printed or cancelled)
+                    cleanup();
+                    mediaQueryList.removeListener(handleChange);
+                }
+            };
+            mediaQueryList.addListener(handleChange);
+        } else {
+            // Fallback for older browsers: remove after a generous timeout (5 min)
+            setTimeout(function() {
+                cleanup();
+            }, 300000);
+        }
+
+        // Small delay to ensure rendering completes, then open print dialog
         setTimeout(function() {
             try {
-                iframe.contentWindow.focus();
-                iframe.contentWindow.print();
+                iframeWindow.focus();
+                iframeWindow.print();
             } catch(e) {
                 alert('Print failed: ' + e.message);
+                cleanup();
             }
-            // Remove the iframe after the print dialog closes (or after a timeout)
-            // onafterprint doesn't work everywhere, so we use a fallback
-            iframe.contentWindow.onafterprint = function() {
-                document.body.removeChild(iframe);
-                document.title = prevTitle;
-            };
-            // Fallback cleanup after 60 seconds
-            setTimeout(function() {
-                if (iframe.parentNode) {
-                    document.body.removeChild(iframe);
-                    document.title = prevTitle;
-                }
-            }, 60000);
         }, 300);
     };
 
-    // Fallback in case onload doesn't fire (e.g., already loaded)
+    // Safety net: if onload never fires (rare), clean up after a long time
     setTimeout(function() {
-        if (doc.readyState === 'complete' && iframe.parentNode) {
-            // manually trigger if onload didn't
-            iframe.onload();
+        if (iframe.parentNode && !iframe.contentWindow) {
+            cleanup();
         }
-    }, 1000);
+    }, 5000);
 }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
