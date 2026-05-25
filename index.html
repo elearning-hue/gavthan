@@ -2411,81 +2411,61 @@ function BillModal(props){
       },1500);
     },200);
   }*/
-function printBill(){
-    if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
+
+function printBill() {
+    if (t === 0) {
+        alert('Cannot print a zero-amount bill. Add items first.');
+        return;
+    }
     stampBillTime();
     var bill = buildBillHTML();
-    var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
+    var fname = (cust.name || 'Bill').replace(/[^a-zA-Z0-9]/g, '') + '_' + t;
     var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
 
-    // Create off‑screen iframe
-    var iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed; left:-9999px; top:0; width:80mm; height:auto; border:none; background:white;';
+    // Create a Blob from the receipt HTML
+    var blob = new Blob([html], { type: 'text/html' });
+    var blobUrl = URL.createObjectURL(blob);
 
-    var prevTitle = document.title;
-    var printStarted = false;
-    var cleaned = false;
-
-    function cleanup() {
-        if (cleaned) return;
-        cleaned = true;
-        if (iframe.parentNode) {
-            document.body.removeChild(iframe);
-        }
-        document.title = prevTitle;
-    }
-
-    // Detect when the print dialog is actually closed
-    function setupCloseDetection(win) {
-        if (win.matchMedia) {
-            var mql = win.matchMedia('print');
-            var handler = function(e) {
-                if (!e.matches) {   // dialog closed
-                    cleanup();
-                    mql.removeListener(handler);
-                }
+    // Try to open a new window – works if popups are allowed
+    var printWindow = window.open(blobUrl, '_blank');
+    if (printWindow) {
+        // Popup is open; wait for it to load then trigger print
+        printWindow.onload = function () {
+            printWindow.focus();
+            printWindow.print();
+            // Revoke the URL after a short delay (print dialog might need it)
+            setTimeout(function () {
+                URL.revokeObjectURL(blobUrl);
+            }, 3000);
+            // Close the window when printing is done (may not work on all mobile browsers)
+            printWindow.onafterprint = function () {
+                printWindow.close();
+                URL.revokeObjectURL(blobUrl);
             };
-            mql.addListener(handler);
+        };
+    } else {
+        // Popup blocked – offer manual download/print
+        URL.revokeObjectURL(blobUrl);   // clean up the blob URL immediately
+        var confirmed = confirm(
+            'Popups are blocked.\n\n' +
+            'Click "OK" to download the receipt as an HTML file.\n' +
+            'Open it and press Ctrl+P (or use the browser menu) to print.'
+        );
+        if (confirmed) {
+            var a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = fname + '.html';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            // Keep the blob URL alive for the download; revoke after a moment
+            setTimeout(function () {
+                URL.revokeObjectURL(blobUrl);
+            }, 10000);
         }
     }
-
-    // Load handler: triggers print and sets up close detection
-    function onLoad() {
-        if (printStarted) return;
-        printStarted = true;
-        var win = iframe.contentWindow;
-        setupCloseDetection(win);
-        // Small delay for rendering stability
-        setTimeout(function() {
-            try {
-                win.focus();
-                win.print();
-            } catch(e) {
-                alert('Print failed: ' + e.message);
-                cleanup();
-            }
-        }, 200);
-    }
-
-    // Attach load listener BEFORE writing the document
-    iframe.addEventListener('load', onLoad, { once: true });
-
-    document.body.appendChild(iframe);
-    var doc = iframe.contentDocument || iframe.contentWindow.document;
-    doc.open();
-    doc.write(html);
-    doc.close();
-
-    // In case the load event already fired (document was cached / instantaneous)
-    if (doc.readyState === 'complete' && !printStarted) {
-        onLoad();
-    }
-
-    // Final safety cleanup after 5 minutes
-    setTimeout(function() {
-        if (!cleaned) cleanup();
-    }, 300000);
 }
+
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
