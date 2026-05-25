@@ -2418,67 +2418,73 @@ function printBill(){
     var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
     var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
 
-    // Off‑screen iframe with a real layout width so mobile doesn't fall back to the parent
+    // Create off‑screen iframe
     var iframe = document.createElement('iframe');
     iframe.style.cssText = 'position:fixed; left:-9999px; top:0; width:80mm; height:auto; border:none; background:white;';
-    document.body.appendChild(iframe);
-
-    var doc = iframe.contentDocument || iframe.contentWindow.document;
-    doc.open();
-    doc.write(html);
-    doc.close();
 
     var prevTitle = document.title;
-    document.title = fname;
+    var printStarted = false;
+    var cleaned = false;
 
-    // Function to safely remove the iframe and restore state
     function cleanup() {
+        if (cleaned) return;
+        cleaned = true;
         if (iframe.parentNode) {
             document.body.removeChild(iframe);
         }
         document.title = prevTitle;
     }
 
-    // When the iframe is fully loaded, set up print‑dialog‑closed detection and trigger print
-    iframe.onload = function() {
-        var iframeWindow = iframe.contentWindow;
-
-        // Detect when the print dialog closes using matchMedia
-        if (iframeWindow.matchMedia) {
-            var mediaQueryList = iframeWindow.matchMedia('print');
-            var handleChange = function(mql) {
-                if (!mql.matches) {
-                    // Print dialog has been closed (either printed or cancelled)
+    // Detect when the print dialog is actually closed
+    function setupCloseDetection(win) {
+        if (win.matchMedia) {
+            var mql = win.matchMedia('print');
+            var handler = function(e) {
+                if (!e.matches) {   // dialog closed
                     cleanup();
-                    mediaQueryList.removeListener(handleChange);
+                    mql.removeListener(handler);
                 }
             };
-            mediaQueryList.addListener(handleChange);
-        } else {
-            // Fallback for older browsers: remove after a generous timeout (5 min)
-            setTimeout(function() {
-                cleanup();
-            }, 300000);
+            mql.addListener(handler);
         }
+    }
 
-        // Small delay to ensure rendering completes, then open print dialog
+    // Load handler: triggers print and sets up close detection
+    function onLoad() {
+        if (printStarted) return;
+        printStarted = true;
+        var win = iframe.contentWindow;
+        setupCloseDetection(win);
+        // Small delay for rendering stability
         setTimeout(function() {
             try {
-                iframeWindow.focus();
-                iframeWindow.print();
+                win.focus();
+                win.print();
             } catch(e) {
                 alert('Print failed: ' + e.message);
                 cleanup();
             }
-        }, 300);
-    };
+        }, 200);
+    }
 
-    // Safety net: if onload never fires (rare), clean up after a long time
+    // Attach load listener BEFORE writing the document
+    iframe.addEventListener('load', onLoad, { once: true });
+
+    document.body.appendChild(iframe);
+    var doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    // In case the load event already fired (document was cached / instantaneous)
+    if (doc.readyState === 'complete' && !printStarted) {
+        onLoad();
+    }
+
+    // Final safety cleanup after 5 minutes
     setTimeout(function() {
-        if (iframe.parentNode && !iframe.contentWindow) {
-            cleanup();
-        }
-    }, 5000);
+        if (!cleaned) cleanup();
+    }, 300000);
 }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
