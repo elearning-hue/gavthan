@@ -1350,7 +1350,24 @@ function OrderPanel(props){
   var grand=finalTotal(cust);
   function printKOT(){
     if(!cust.items.length){alert('No items to send to kitchen.');return;}
+    /*
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:14px;padding:14px;max-width:300px;margin:0 auto}h2{text-align:center;font-size:17px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}.inf{font-size:12px;margin-bottom:2px}.it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}.q{min-width:36px;text-align:right}.tm{font-size:9px;color:#777;font-weight:normal}.foot{text-align:center;font-size:10px;color:#777;margin-top:10px}';
+    */
+    var css = `
+      @page { size: auto; margin: 5mm; }
+      @media print {
+        body { width: 100%; margin: 0; font-family: "Courier New", monospace; }
+      }
+      *{box-sizing:border-box}
+      body{font-family:"Courier New",monospace;font-size:14px;padding:14px;max-width:300px;margin:0 auto}
+      h2{text-align:center;font-size:17px;margin:0 0 2px}
+      .sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}
+      .inf{font-size:12px;margin-bottom:2px}
+      .it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}
+      .q{min-width:36px;text-align:right}
+      .tm{font-size:9px;color:#777;font-weight:normal}
+      .foot{text-align:center;font-size:10px;color:#777;margin-top:10px}
+    `;
     var rows=cust.items.map(function(i){
       var tms=itemTimes(i);
       var tStr=tms.length?'<br/><span class="tm">'+escHtml(tms.map(timeOf).join(' · '))+'</span>':'';
@@ -2342,8 +2359,32 @@ function BillModal(props){
     },300);
   }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
- /* function buildBillHTML(){
+  function buildBillHTML(){
+    /*  
     var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:12px;padding:14px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px;letter-spacing:3px;margin-bottom:2px}.sub{text-align:center;font-size:11px;color:#666;margin-bottom:12px;border-bottom:1px dashed #ccc;padding-bottom:8px}.inf{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px}hr{border:1px dashed #bbb;margin:7px 0}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:3px 0;border-bottom:1px solid #999;text-align:left;font-weight:bold}th:not(:first-child),td:not(:first-child){text-align:right}td{padding:3px 0;border-bottom:1px dotted #eee}.sl{display:flex;justify-content:space-between;font-size:11px;margin:2px 0}.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding-top:8px;border-top:2px solid #333;margin-top:6px}.foot{text-align:center;font-size:11px;color:#666;margin-top:14px;border-top:1px dashed #ccc;padding-top:8px}';
+    */
+    var css = `
+      @page { size: auto; margin: 5mm; }
+      @media print {
+        body { 
+          width: 100%; margin: 0; padding: 0; 
+          font-family: "Courier New", monospace; font-size: 12px; 
+        }
+        * { -webkit-print-color-adjust: exact; }
+      }
+      body { font-family: "Courier New", monospace; font-size: 12px; padding: 14px; max-width: 320px; margin: 0 auto; }
+      h2 { text-align: center; font-size: 18px; letter-spacing: 3px; margin-bottom: 2px; }
+      .sub { text-align: center; font-size: 11px; color: #666; margin-bottom: 12px; border-bottom: 1px dashed #ccc; padding-bottom: 8px; }
+      .inf { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 2px; }
+      hr { border: 1px dashed #bbb; margin: 7px 0; }
+      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      th { padding: 3px 0; border-bottom: 1px solid #999; text-align: left; font-weight: bold; }
+      th:not(:first-child), td:not(:first-child) { text-align: right; }
+      td { padding: 3px 0; border-bottom: 1px dotted #eee; overflow: hidden; }
+      .sl { display: flex; justify-content: space-between; font-size: 11px; margin: 2px 0; }
+      .tot { display: flex; justify-content: space-between; font-size: 15px; font-weight: bold; padding-top: 8px; border-top: 2px solid #333; margin-top: 6px; }
+      .foot { text-align: center; font-size: 11px; color: #666; margin-top: 14px; border-top: 1px dashed #ccc; padding-top: 8px; }
+    `;
     var rows=cust.items.map(function(i){return'<tr><td>'+escHtml(i.name)+'</td><td>'+(Number(i.qty)||0)+'</td><td>&#8377;'+(Number(i.price)||0)+'</td><td>&#8377;'+((Number(i.price)||0)*(Number(i.qty)||0))+'</td></tr>';}).join('');
     var dA=discountAmt(cust),aA=adjustAmt(cust);
     var breakdown='';
@@ -2358,78 +2399,7 @@ function BillModal(props){
     var body='<h2>GAVTHAN</h2><div class="sub">Receipt / Bill'+(displayBillNo?' '+fmtBill(displayBillNo):'')+'</div><div class="inf"><span><b>'+escHtml(cust.name)+'</b></span><span>'+escHtml(dateOf(billTs))+'</span></div><div class="inf"><span>Room/Table: <b>'+escHtml(cust.room)+'</b></span><span>'+escHtml(timeOf(billTs))+'</span></div>'+(cust.phone?'<div class="inf"><span>Ph: '+escHtml(cust.phone)+'</span></div>':'')+'<hr><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amt</th></tr></thead><tbody>'+rows+'</tbody></table><hr>'+breakdown+'<div class="tot"><span>TOTAL</span><span>&#8377;'+t+'</span></div>'+(UPI_ID?'<hr><div style="text-align:center;font-size:11px;margin-top:6px"><b>Pay via UPI</b><br/>'+escHtml(UPI_ID)+'<br/>Amount: &#8377;'+t+'</div>':'')+'<div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>';
     return {css:css,body:body};
   }
-  */
-
-  function buildBillHTML() {
-    // Enhanced CSS for mobile print stability
-    var css = `
-      * { box-sizing: border-box; -webkit-print-color-adjust: exact; }
-      body { 
-        font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Monaco, Consolas, 'DejaVu Sans Mono', monospace; 
-        font-size: 12px; padding: 10px; max-width: 300px; margin: 0 auto; color: #000;
-      }
-      h2 { text-align: center; font-size: 18px; letter-spacing: 2px; margin: 0 0 4px 0; }
-      .sub { text-align: center; font-size: 11px; color: #333; margin-bottom: 10px; border-bottom: 1px dashed #000; padding-bottom: 8px; }
-      .inf { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
-      hr { border: none; border-top: 1px dashed #000; margin: 8px 0; }
-      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-      th { padding: 4px 0; border-bottom: 1px solid #000; text-align: left; font-weight: bold; font-size: 11px; }
-      td { padding: 5px 0; border-bottom: 1px dotted #ccc; font-size: 12px; word-break: break-word; }
-      /* Explicit column widths to prevent squishing on Android */
-      .col-name { width: 45%; }
-      .col-qty { width: 10%; text-align: right; }
-      .col-rate { width: 22%; text-align: right; }
-      .col-amt { width: 23%; text-align: right; }
-      .sl { display: flex; justify-content: space-between; font-size: 11px; margin: 3px 0; }
-      .tot { display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; padding-top: 8px; border-top: 2px solid #000; margin-top: 8px; }
-      .foot { text-align: center; font-size: 11px; color: #333; margin-top: 15px; border-top: 1px dashed #000; padding-top: 10px; line-height: 1.4; }
-    `;
-
-    var rows = cust.items.map(function(i) {
-      return `<tr>
-        <td class="col-name">${escHtml(i.name)}</td>
-        <td class="col-qty">${i.qty}</td>
-        <td class="col-rate">₹${i.price}</td>
-        <td class="col-amt">₹${(i.price * i.qty)}</td>
-      </tr>`;
-    }).join('');
-
-    var dA = discountAmt(cust), aA = adjustAmt(cust);
-    var breakdown = '';
-    if (dA > 0 || (cust.adjustment_on && aA !== 0)) {
-      breakdown += `<div class="sl"><span>Subtotal</span><span>₹${rawTotal(cust)}</span></div>`;
-      if (dA > 0) breakdown += `<div class="sl"><span>Discount (${cust.discount_pct}%)</span><span>-₹${dA}</span></div>`;
-      if (cust.adjustment_on && aA !== 0) breakdown += `<div class="sl"><span>Adjustment</span><span>${aA > 0 ? '+' : ''}₹${aA}</span></div>`;
-    }
-
-    var billTs = cust.bill_time || cust.date;
-    var body = `
-      <h2>GAVTHAN</h2>
-      <div class="sub">Receipt / Bill ${displayBillNo ? fmtBill(displayBillNo) : ''}</div>
-      <div class="inf"><span><b>${escHtml(cust.name)}</b></span><span>${dateOf(billTs)}</span></div>
-      <div class="inf"><span>Room/Table: <b>${escHtml(cust.room)}</b></span><span>${timeOf(billTs)}</span></div>
-      ${cust.phone ? `<div class="inf"><span>Ph: ${escHtml(cust.phone)}</span></div>` : ''}
-      <hr>
-      <table>
-        <thead>
-          <tr>
-            <th class="col-name">Item</th>
-            <th class="col-qty">Qty</th>
-            <th class="col-rate">Rate</th>
-            <th class="col-amt">Amt</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <hr>
-      ${breakdown}
-      <div class="tot"><span>TOTAL</span><span>₹${t}</span></div>
-      ${UPI_ID ? `<div style="text-align:center;font-size:11px;margin-top:10px"><b>Pay via UPI</b><br/>${escHtml(UPI_ID)}<br/>Amount: ₹${t}</div>` : ''}
-      <div class="foot">Thank you for visiting Gavthan!<br>Please come again.</div>
-    `;
-    return { css: css, body: body };
-  }
-
+  
   function saveJPEG(){
     if(t===0){alert('Cannot save a zero-amount bill. Add items first.');return;}
     if(typeof html2canvas==='undefined'){alert('Image library not loaded. Check your internet connection and reload.');return;}
