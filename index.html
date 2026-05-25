@@ -2418,51 +2418,52 @@ function BillModal(props){
     var fname = (cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'') + '_' + t;
     var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>' + fname + '</title><style>' + bill.css + '</style></head><body>' + bill.body + '</body></html>';
 
-    // Open a small popup – must be called directly from the user click
-    var printWindow = window.open('', '_blank', 'width=400,height=600');
-    if (!printWindow) {
-        alert('Popup blocked. Please allow popups for this site to print the bill.');
-        return;
-    }
+    // Create an off-screen iframe – not zero-size, to prevent mobile from printing the parent DOM
+    var iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed; left:-9999px; top:0; width: 80mm; height:auto; border:none; background:white;';
+    document.body.appendChild(iframe);
 
-    // Write the receipt into the popup
-    printWindow.document.open();
-    printWindow.document.write(html);
-    printWindow.document.close();
+    var doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
 
-    // Core print logic
-    function triggerPrint() {
-        printWindow.focus();
+    var prevTitle = document.title;
+    document.title = fname;
 
-        // Use matchMedia to reliably close the popup when the print dialog closes
-        var mediaQueryList = printWindow.matchMedia('print');
-        var closeWindow = function() {
-            if (!printWindow.closed) printWindow.close();
-        };
-        mediaQueryList.addListener(function(mql) {
-            if (!mql.matches) {   // user has closed the print dialog
-                closeWindow();
-            }
-        });
-
-        // Trigger the browser's print dialog
-        printWindow.print();
-
-        // Fallback: if matchMedia isn't supported, close the popup after 2 minutes
+    // Wait for the iframe to fully render, then print
+    iframe.onload = function() {
+        // Small extra delay to be safe on slow devices
         setTimeout(function() {
-            if (!printWindow.closed) closeWindow();
-        }, 120000);
-    }
+            try {
+                iframe.contentWindow.focus();
+                iframe.contentWindow.print();
+            } catch(e) {
+                alert('Print failed: ' + e.message);
+            }
+            // Remove the iframe after the print dialog closes (or after a timeout)
+            // onafterprint doesn't work everywhere, so we use a fallback
+            iframe.contentWindow.onafterprint = function() {
+                document.body.removeChild(iframe);
+                document.title = prevTitle;
+            };
+            // Fallback cleanup after 60 seconds
+            setTimeout(function() {
+                if (iframe.parentNode) {
+                    document.body.removeChild(iframe);
+                    document.title = prevTitle;
+                }
+            }, 60000);
+        }, 300);
+    };
 
-    // If the document is already fully loaded, print after a tiny rendering delay.
-    // Otherwise, wait for the onload event.
-    if (printWindow.document.readyState === 'complete') {
-        setTimeout(triggerPrint, 200);
-    } else {
-        printWindow.onload = function() {
-            setTimeout(triggerPrint, 200);
-        };
-    }
+    // Fallback in case onload doesn't fire (e.g., already loaded)
+    setTimeout(function() {
+        if (doc.readyState === 'complete' && iframe.parentNode) {
+            // manually trigger if onload didn't
+            iframe.onload();
+        }
+    }, 1000);
 }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
