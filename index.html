@@ -686,10 +686,10 @@ function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,fu
 function catIcon(cat){
   var c=(cat||'').toLowerCase();
   if(c.indexOf('break')!==-1) return '🍳';
-  if(c==='veg'||c.indexOf('veg')===0) return '🥗';
   if(c.indexOf('non')!==-1&&c.indexOf('veg')!==-1) return '🍗';
+  if(c==='veg'||c.indexOf('veg')===0) return '🥗';
   if(c.indexOf('bhakri')!==-1) return '🌾';
-  if(c.indexOf('chapati')!==-1||c.indexOf('roti')!==-1) return '🫓';
+  if(c.indexOf('chapati')!==-1||c.indexOf('roti')!==-1) return '🥙';
   if(c.indexOf('cold')!==-1||c.indexOf('drink')!==-1||c.indexOf('juice')!==-1||c.indexOf('soda')!==-1) return '🥤';
   if(c.indexOf('water')!==-1) return '💧';
   if(c.indexOf('glass')!==-1) return '🥃';
@@ -702,9 +702,13 @@ function catIcon(cat){
   if(c.indexOf('curry')!==-1) return '🍛';
   if(c.indexOf('seafood')!==-1||c.indexOf('fish')!==-1) return '🐟';
   if(c.indexOf('egg')!==-1) return '🥚';
+  if(c.indexOf('cigarette')!==-1||c.indexOf('smoke')!==-1) return '🚬';
   return '🍽';
 }
-function Chip(props){var c=clr(props.cat,props.cats);return h('span',{className:'chip',title:props.cat,style:{background:c.bg,color:c.tx,padding:'2px 6px',fontSize:14,minWidth:24,textAlign:'center'}},catIcon(props.cat));}
+function Chip(props){
+  var c=clr(props.cat,props.cats);
+  return h('span',{className:'chip',title:props.cat,style:{background:c.bg,color:c.tx,padding:'2px 6px',fontSize:15,minWidth:26,textAlign:'center',display:'inline-flex',alignItems:'center',justifyContent:'center'}},catIcon(props.cat));
+}
 
 // ── SUPABASE DATA LAYER ───────────────────────────
 function sbErr(e){return e&&(e.message||e.details||JSON.stringify(e));}
@@ -1191,7 +1195,9 @@ function App(props){
 
   // ── Menu ops ──
   function addMenuItem(cat,name,price){
-    var row={id:uuid(),cat:cat,name:name,price:parseInt(price)};
+    // New items get sort_order = (max in cat) + 10 so they go to the end
+    var maxSort=menu.filter(function(m){return m.cat===cat;}).reduce(function(a,m){return Math.max(a,Number(m.sort_order)||0);},0);
+    var row={id:uuid(),cat:cat,name:name,price:parseInt(price),sort_order:maxSort+10};
     supa.from('mh_menu').insert(row)
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
       .catch(showErr);
@@ -1208,6 +1214,37 @@ function App(props){
   }
   function toggleMenuAvail(id,avail){
     supa.from('mh_menu').update({available:avail}).eq('id',id)
+      .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
+      .catch(showErr);
+  }
+  // Reorder a menu item up/down within its category by swapping sort_order with neighbour
+  function moveMenuItem(id,dir){
+    var item=menu.find(function(m){return m.id===id;});
+    if(!item)return;
+    var sib=menu.filter(function(m){return m.cat===item.cat;}).slice().sort(function(a,b){
+      var sa=Number(a.sort_order)||0, sb=Number(b.sort_order)||0;
+      return sa===sb?a.name.localeCompare(b.name):sa-sb;
+    });
+    var idx=sib.findIndex(function(m){return m.id===id;});
+    var target=sib[idx+dir];
+    if(!target)return;
+    var aSo=Number(item.sort_order)||0, bSo=Number(target.sort_order)||0;
+    // If neighbours share the same sort_order, normalise first by giving the moved item an offset
+    if(aSo===bSo) bSo=aSo+(dir>0?1:-1);
+    Promise.all([
+      supa.from('mh_menu').update({sort_order:bSo}).eq('id',id),
+      supa.from('mh_menu').update({sort_order:aSo}).eq('id',target.id)
+    ]).then(fetchAll).catch(showErr);
+  }
+  // Reorder a category up/down in the mh_categories.list array
+  function moveCategory(catName,dir){
+    var idx=cats.indexOf(catName);
+    if(idx<0)return;
+    var newIdx=idx+dir;
+    if(newIdx<0||newIdx>=cats.length)return;
+    var arr=cats.slice();
+    var tmp=arr[idx];arr[idx]=arr[newIdx];arr[newIdx]=tmp;
+    supa.from('mh_categories').upsert({id:'main',list:arr})
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
       .catch(showErr);
   }
@@ -1345,7 +1382,7 @@ function App(props){
       tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment,updateCustomer}),
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs,admin}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
-      tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem,toggleMenuAvail}),
+      tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem,toggleMenuAvail,moveMenuItem,moveCategory}),
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
       tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,currentEmail:user.email,superAdmin:superAdmin,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout,backupDatabase,restoreFromBackup,driveInterval,saveDriveInterval,driveLast})
     ),
@@ -1392,7 +1429,10 @@ function OrderPanel(props){
   var _adj=useState(String(cust.adjustment||''));var adj=_adj[0];var setAdj=_adj[1];
   var _reason=useState(cust.reason||'');var reason=_reason[0];var setReason=_reason[1];
   var reasonNeeded=!!(cust.discount_on||cust.adjustment_on);
-  var filtered=menu.filter(function(m){return m.cat===cat&&m.available!==false&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
+  var filtered=menu.filter(function(m){return m.cat===cat&&m.available!==false&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;}).slice().sort(function(a,b){
+    var sa=Number(a.sort_order)||0, sb=Number(b.sort_order)||0;
+    return sa===sb?(a.name||'').localeCompare(b.name||''):sa-sb;
+  });
   var raw=rawTotal(cust);
   var dAmt=discountAmt(cust);
   var aAmt=adjustAmt(cust);
@@ -1434,7 +1474,9 @@ function OrderPanel(props){
     h('div',{className:'hr'}),
     h('div',{style:{fontSize:11,color:'#B45309',fontWeight:700,letterSpacing:0.5,marginBottom:4}},'➕ ADD ITEMS'),
     h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
-    h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',onClick:function(){setCat(c);}},c);})),
+    h('div',{className:'cats'},cats.map(function(c){
+      return h('button',{key:c,className:cat===c?'on':'',title:c,style:{fontSize:18,padding:'4px 8px',minWidth:30},onClick:function(){setCat(c);}},catIcon(c));
+    })),
     h('div',{className:'sb'},filtered.length===0?h('div',{style:{fontSize:12,color:'#6b6b67',padding:8}},'No items.'):
       filtered.map(function(mi){
         var inO=cust.items.find(function(i){return i.id===mi.id;});
@@ -1950,6 +1992,8 @@ function MenuTab(props){
   var cats=props.cats,saveCats=props.saveCats,menu=props.menu;
   var addMenuItem=props.addMenuItem,updateMenuItem=props.updateMenuItem,deleteMenuItem=props.deleteMenuItem;
   var toggleMenuAvail=props.toggleMenuAvail;
+  var moveMenuItem=props.moveMenuItem||function(){};
+  var moveCategory=props.moveCategory||function(){};
   var _sel=useState(cats[0]||'');var selCat=_sel[0];var setSelCat=_sel[1];
   var _nc=useState('');var newCat=_nc[0];var setNewCat=_nc[1];
   var _eci=useState(null);var editCatId=_eci[0];var setEditCatId=_eci[1];
@@ -1965,7 +2009,10 @@ function MenuTab(props){
   function doDelCat(cat){if(!confirm('Delete "'+cat+'"?'))return;saveCats(cats.filter(function(c){return c!==cat;}),cat,null);var rem=cats.filter(function(c){return c!==cat;});setSelCat(rem[0]||'');if(editCatId===cat)setEditCatId(null);}
   function doAddItem(){var n=newN.trim();var p=parseInt(newP);if(!n){alert('Name required.');return;}if(isNaN(p)||p<0){alert('Valid price required.');return;}addMenuItem(selCat,n,p);setNewN('');setNewP('');}
   function doSaveItem(){var n=editN.trim();var p=parseInt(editP);if(!n||isNaN(p)||p<0){alert('Valid name and price.');return;}updateMenuItem(editId,n,p);setEditId(null);}
-  var selItems=menu.filter(function(m){return m.cat===selCat;});
+  var selItems=menu.filter(function(m){return m.cat===selCat;}).slice().sort(function(a,b){
+    var sa=Number(a.sort_order)||0, sb=Number(b.sort_order)||0;
+    return sa===sb?(a.name||'').localeCompare(b.name||''):sa-sb;
+  });
 
   return h('div',null,
     h('div',{className:'card'},
@@ -1977,7 +2024,7 @@ function MenuTab(props){
           h('button',{className:'btn btn-a xs',style:{flexShrink:0},onClick:doAddCat},'+ Add')
         )
       ),
-      cats.map(function(cat){
+      cats.map(function(cat,catIdx){
         var cnt=menu.filter(function(m){return m.cat===cat;}).length;
         if(editCatId===cat)return h('div',{key:cat,style:{marginBottom:6}},h('div',{className:'editrow row'},
           h('input',{value:editCatVal,onChange:function(e){setEditCatVal(e.target.value);},autoFocus:true,style:{flex:1,fontSize:12},onKeyDown:function(e){if(e.key==='Enter')doSaveCat();if(e.key==='Escape')setEditCatId(null);}}),
@@ -1988,6 +2035,8 @@ function MenuTab(props){
           h('div',{className:'row bw',style:{background:cat===selCat?'#f0ede8':'#fff',border:'1px solid #e0ddd6',borderRadius:8,padding:'7px 10px',cursor:'pointer'},onClick:function(){setSelCat(cat);}},
             h('div',{className:'row',style:{gap:6}},h(Chip,{cat,cats}),h('span',{style:{fontWeight:cat===selCat?700:400}},cat),h('span',{className:'muted',style:{fontSize:11}},cnt+' item'+(cnt!==1?'s':''))),
             h('div',{className:'row',style:{gap:4}},
+              h('button',{className:'btn xs',disabled:catIdx===0,title:'Move up',style:{padding:'3px 6px'},onClick:function(e){e.stopPropagation();moveCategory(cat,-1);}},'↑'),
+              h('button',{className:'btn xs',disabled:catIdx===cats.length-1,title:'Move down',style:{padding:'3px 6px'},onClick:function(e){e.stopPropagation();moveCategory(cat,1);}},'↓'),
               h('button',{className:'btn xs',onClick:function(e){e.stopPropagation();setEditCatId(cat);setEditCatVal(cat);}},'✏ Rename'),
               h('button',{className:'btn btn-r xs',onClick:function(e){e.stopPropagation();doDelCat(cat);}},'🗑 Delete')
             )
@@ -1999,7 +2048,7 @@ function MenuTab(props){
       h('div',{className:'row bw',style:{marginBottom:10}},h('div',{className:'ttl',style:{margin:0}},'Items in:'),h(Chip,{cat:selCat,cats})),
       selItems.length===0&&h('div',{className:'muted',style:{fontSize:12,marginBottom:8}},'No items. Add below.'),
       h('div',{className:'sb',style:{marginBottom:8}},
-        selItems.map(function(it){
+        selItems.map(function(it,itIdx){
           if(editId===it.id)return h('div',{key:it.id,className:'editrow',style:{marginBottom:4}},
             h('div',{className:'muted',style:{fontSize:11,marginBottom:6}},'Editing: ',h('strong',null,it.name)),
             h('div',{className:'row',style:{marginBottom:6}},
@@ -2010,6 +2059,10 @@ function MenuTab(props){
           );
           var avail=it.available!==false;
           return h('div',{key:it.id,className:'li',style:{opacity:avail?1:0.55}},
+            h('div',{className:'row',style:{gap:2,marginRight:4}},
+              h('button',{className:'btn xs',disabled:itIdx===0,title:'Move up',style:{padding:'2px 5px',minWidth:24},onClick:function(){moveMenuItem(it.id,-1);}},'↑'),
+              h('button',{className:'btn xs',disabled:itIdx===selItems.length-1,title:'Move down',style:{padding:'2px 5px',minWidth:24},onClick:function(){moveMenuItem(it.id,1);}},'↓')
+            ),
             h('span',{style:{flex:1}},it.name,!avail&&h('span',{style:{fontSize:10,color:'#991B1B',fontWeight:700,marginLeft:5}},'OUT OF STOCK')),
             h('span',{style:{fontWeight:700,color:'#B45309',minWidth:40,textAlign:'right'}},'₹'+it.price),
             h('button',{className:'btn xs '+(avail?'btn-r':'btn-g'),style:{marginLeft:8},onClick:function(){toggleMenuAvail(it.id,!avail);}},avail?'Mark Out':'Mark In'),
