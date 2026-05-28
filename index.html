@@ -375,6 +375,15 @@ input:focus,select:focus{outline:none;border-color:#B45309}
 .li{display:flex;align-items:center;gap:5px;padding:6px 0;border-bottom:1px solid #e0ddd6}
 .li:last-child{border-bottom:none}
 .qb{width:22px;height:22px;border:1px solid #e0ddd6;border-radius:4px;background:#f0ede8;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+/* Menu picker rows in the order tab — card-like, scannable, tap-friendly */
+.mi-pick{display:flex;align-items:center;gap:8px;padding:9px 11px;margin-bottom:5px;border:1px solid #ecd9bf;border-left:4px solid #B45309;border-radius:9px;background:linear-gradient(135deg,#fffaf2,#fbf0dd);box-shadow:0 1px 2px rgba(120,80,20,.06);transition:transform .07s,box-shadow .15s,background .15s;cursor:pointer}
+.mi-pick:hover{background:linear-gradient(135deg,#fff5e6,#f8e8cd);box-shadow:0 2px 7px rgba(120,80,20,.14)}
+.mi-pick:active{transform:scale(.99)}
+.mi-pick.in{border-left-color:#27500A;background:linear-gradient(135deg,#f1f8ea,#e3f0d6)}
+.mi-pick .mi-name{flex:1;min-width:0;font-weight:600;font-size:13px;color:#2a2a26;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mi-pick .mi-price{font-weight:800;font-size:13px;color:#B45309;background:#fff;border:1px solid #ecd9bf;border-radius:14px;padding:2px 9px;flex-shrink:0}
+.mi-pick .qb{width:26px;height:26px;font-size:16px;font-weight:700}
+.mi-pick .mi-qty{min-width:18px;text-align:center;font-weight:800;color:#27500A}
 .chip{display:inline-block;font-size:10px;padding:1px 6px;border-radius:20px;font-weight:700;flex-shrink:0;white-space:nowrap}
 .hr{border:none;border-top:1px solid #e0ddd6;margin:8px 0}
 .sb{max-height:220px;overflow-y:auto}
@@ -734,7 +743,7 @@ function catIcon(cat){
   if(c.indexOf('soup')!==-1) return '🍲';
   if(c.indexOf('curry')!==-1) return '🍛';
   if(c.indexOf('seafood')!==-1||c.indexOf('fish')!==-1) return '🐟';
-  if(c.indexOf('egg')!==-1) return '🥚';  
+  if(c.indexOf('egg')!==-1) return '🥚';
   if(c.indexOf('cigarette')!==-1||c.indexOf('smoke')!==-1) return '🚬';
   return '🍽';
 }
@@ -1464,12 +1473,13 @@ function OrderPanel(props){
     h('div',{className:'sb'},filtered.length===0?h('div',{style:{fontSize:12,color:'#6b6b67',padding:8}},'No items.'):
       filtered.map(function(mi){
         var inO=cust.items.find(function(i){return i.id===mi.id;});
-        return h('div',{key:mi.id,className:'li'},
-          h('span',{style:{flex:1}},mi.name),
-          h('span',{className:'muted',style:{marginRight:4}},'₹'+mi.price),
-          inO&&h('button',{className:'qb',onClick:function(){upsertItem(cust.id,mi.id,-1);}},'-'),
-          inO&&h('span',{style:{minWidth:14,textAlign:'center'}},inO.qty),
-          h('button',{className:'qb',style:{background:'#B45309',color:'#fff',border:'none'},onClick:function(){upsertItem(cust.id,mi.id,1);}},'+')
+        return h('div',{key:mi.id,className:'mi-pick'+(inO?' in':''),onClick:function(){upsertItem(cust.id,mi.id,1);}},
+          h(Chip,{cat:mi.cat,cats}),
+          h('span',{className:'mi-name'},mi.name),
+          h('span',{className:'mi-price'},'₹'+mi.price),
+          inO&&h('button',{className:'qb',onClick:function(e){e.stopPropagation();upsertItem(cust.id,mi.id,-1);}},'−'),
+          inO&&h('span',{className:'mi-qty'},inO.qty),
+          h('button',{className:'qb',style:{background:'#B45309',color:'#fff',border:'none'},onClick:function(e){e.stopPropagation();upsertItem(cust.id,mi.id,1);}},'+')
         );
       })
     ),
