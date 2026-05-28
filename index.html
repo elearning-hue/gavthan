@@ -743,7 +743,8 @@ function catIcon(cat){
   if(c.indexOf('soup')!==-1) return '🍲';
   if(c.indexOf('curry')!==-1) return '🍛';
   if(c.indexOf('seafood')!==-1||c.indexOf('fish')!==-1) return '🐟';
-  if(c.indexOf('egg')!==-1) return '🥚';
+  if(c.indexOf('egg')!==-1) return '🥚';  
+  if(c.indexOf('cigarette')!==-1||c.indexOf('smoke')!==-1) return '🚬';
   return '🍽';
 }
 function Chip(props){var c=clr(props.cat,props.cats);return h('span',{className:'chip',title:props.cat,style:{background:c.bg,color:c.tx,padding:'2px 6px',fontSize:14,minWidth:24,textAlign:'center'}},catIcon(props.cat));}
