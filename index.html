@@ -6,6 +6,8 @@
 <title>Gavthan — Billing</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
 <script>
 /* === ESC/POS thermal printing module (inlined) === */
 // ─────────────────────────────────────────────────────────────────────
@@ -193,13 +195,44 @@
   var BT_CHAR_HINT = [0x2af1, 0xff01, 0xfff1];
 
   async function btConnect() {
-    if (!navigator.bluetooth) throw new Error('Web Bluetooth not available on this device/browser. Use Chrome on Android/Desktop, or use the WebSocket relay for iOS.');
-    var device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'XP' }, { namePrefix: 'Xprinter' }, { namePrefix: 'Printer' }, { namePrefix: 'POS' }],
-      optionalServices: BT_SERVICES
-    });
+    if (!navigator.bluetooth) {
+      throw new Error('Web Bluetooth is not available on this browser. Switch to "WebSocket relay" mode in Users → Thermal Printer Settings, or use Chrome/Edge on Android.');
+    }
+    // Some Android Chrome builds expose navigator.bluetooth but throw on requestDevice if globally disabled
+    try {
+      var available = true;
+      if (typeof navigator.bluetooth.getAvailability === 'function') {
+        available = await navigator.bluetooth.getAvailability();
+      }
+      if (!available) {
+        throw new Error('Bluetooth is turned off on this device. Turn on Bluetooth in system settings and try again.');
+      }
+    } catch (e) { if (e && e.message && /turned off/.test(e.message)) throw e; /* getAvailability not supported — proceed */ }
+    var device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'XP' }, { namePrefix: 'Xprinter' }, { namePrefix: 'Printer' }, { namePrefix: 'POS' }],
+        optionalServices: BT_SERVICES
+      });
+    } catch (e) {
+      var msg = (e && e.message) || '';
+      // "Web Bluetooth API globally disabled" comes from Chrome when the flag is off / policy blocks it
+      if (/globally disabled|user denied|not allowed|SecurityError/i.test(msg)) {
+        throw new Error(
+          'Web Bluetooth is disabled on this browser.\n\n' +
+          'TO FIX (Android Chrome):\n' +
+          '  1. Open Chrome → tap address bar → type:  chrome://flags\n' +
+          '  2. Search "Web Bluetooth" → set to Enabled\n' +
+          '  3. Relaunch Chrome\n\n' +
+          'OR use the WebSocket relay option in Users → Thermal Printer Settings (works without Bluetooth).'
+        );
+      }
+      if (/cancelled|User cancelled/i.test(msg)) {
+        throw new Error('You cancelled the printer picker. Try again and pick your printer.');
+      }
+      throw e;
+    }
     var server = await device.gatt.connect();
-    // Find a writable characteristic across known services
     var services = await server.getPrimaryServices();
     for (var i = 0; i < services.length; i++) {
       var chars = await services[i].getCharacteristics();
@@ -316,6 +349,8 @@ The relay forwards raw bytes to the printer — no transcoding.
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;background:#f5f5f0;color:#1a1a18}
+.sort-ghost{opacity:0.4;background:#FAEEDA !important}
+.dh{cursor:grab}.dh:active{cursor:grabbing}
 .wrap{max-width:480px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
 .hdr{background:#fff;border-bottom:1px solid #e0ddd6;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;flex-wrap:wrap;gap:4px}
 .logo{font-size:15px;font-weight:700}.logo em{color:#B45309;font-style:normal}
@@ -631,6 +666,36 @@ function escHtml(s){
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+// Mobile-safe print: open a fresh window containing ONLY the receipt and print from there.
+// Avoids the broken hidden-iframe + DOM-injection paths (3rd-party Bluetooth printer apps
+// re-render the parent DOM and capture the whole app). Must be called synchronously from a
+// click handler so popup blockers allow it. Falls back to a download-as-HTML if blocked.
+function printInNewWindow(title,css,bodyHtml){
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>'+escHtml(title)+'</title><style>'+css+'</style></head><body>'+bodyHtml+'<script>window.onload=function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},250);};window.onafterprint=function(){setTimeout(function(){try{window.close();}catch(e){}},300);};<\/script></body></html>';
+  var w=null;
+  try{w=window.open('','_blank');}catch(e){}
+  if(!w){
+    // Popup blocked → fallback: download the receipt as a standalone HTML file the user can open & print.
+    try{
+      var blob=new Blob([html],{type:'text/html'});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=url;a.download=title+'.html';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      alert('Popup blocked. Receipt downloaded as HTML — open it and print from your browser.');
+    }catch(e){alert('Print failed: popup blocked and download fallback errored ('+e.message+').');}
+    return;
+  }
+  try{
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  }catch(e){
+    try{w.close();}catch(_){}
+    alert('Print failed: '+e.message);
+  }
+}
 // Format a bill number as INV-00001
 function fmtBill(n){
   if(!n)return '';
@@ -650,13 +715,36 @@ function initCap(s){return(s||'').toLowerCase().replace(/\b\w/g,function(c){retu
 function todayCount(custs){var t=new Date().toDateString();return custs.filter(function(c){return new Date(c.date).toDateString()===t;}).length;}
 function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0;return(c==='x'?r:r&0x3|0x8).toString(16);});}
 
-function Chip(props){var c=clr(props.cat,props.cats);return h('span',{className:'chip',style:{background:c.bg,color:c.tx}},props.cat);}
+// Map known category names to a small icon. Falls back to a generic 🍽 for unknowns.
+function catIcon(cat){
+  var c=(cat||'').toLowerCase();
+  if(c.indexOf('break')!==-1) return '🍳';
+  if(c==='veg'||c.indexOf('veg')===0) return '🥗';
+  if(c.indexOf('non')!==-1&&c.indexOf('veg')!==-1) return '🍗';
+  if(c.indexOf('bhakri')!==-1) return '🌾';
+  if(c.indexOf('chapati')!==-1||c.indexOf('roti')!==-1) return '🫓';
+  if(c.indexOf('cold')!==-1||c.indexOf('drink')!==-1||c.indexOf('juice')!==-1||c.indexOf('soda')!==-1) return '🥤';
+  if(c.indexOf('water')!==-1) return '💧';
+  if(c.indexOf('glass')!==-1) return '🥃';
+  if(c.indexOf('tea')!==-1) return '🍵';
+  if(c.indexOf('coffee')!==-1) return '☕';
+  if(c.indexOf('rice')!==-1||c.indexOf('biryani')!==-1) return '🍚';
+  if(c.indexOf('dessert')!==-1||c.indexOf('sweet')!==-1) return '🍰';
+  if(c.indexOf('snack')!==-1||c.indexOf('starter')!==-1) return '🍿';
+  if(c.indexOf('soup')!==-1) return '🍲';
+  if(c.indexOf('curry')!==-1) return '🍛';
+  if(c.indexOf('seafood')!==-1||c.indexOf('fish')!==-1) return '🐟';
+  if(c.indexOf('egg')!==-1) return '🥚';  
+  if(c.indexOf('cigarette')!==-1||c.indexOf('smoke')!==-1) return '🚬';
+  return '🍽';
+}
+function Chip(props){var c=clr(props.cat,props.cats);return h('span',{className:'chip',title:props.cat,style:{background:c.bg,color:c.tx,padding:'2px 6px',fontSize:14,minWidth:24,textAlign:'center'}},catIcon(props.cat));}
 
 // ── SUPABASE DATA LAYER ───────────────────────────
 function sbErr(e){return e&&(e.message||e.details||JSON.stringify(e));}
 
 function loadMenu(){
-  return supa.from('mh_menu').select('*').then(function(r){
+  return supa.from('mh_menu').select('*').order('sort_order',{ascending:true,nullsFirst:false}).order('name',{ascending:true}).then(function(r){
     if(r.error)throw new Error(sbErr(r.error));
     return r.data||[];
   });
@@ -1170,6 +1258,18 @@ function App(props){
         .then(function(){fetchAll();}).catch(showErr);
     }
   }
+  // Batch-update sort_order for a list of item ids in the given order. Issues one update
+  // per row (Supabase has no bulk-conditional-update); refreshes once at the end.
+  function reorderItems(orderedIds){
+    if(!orderedIds||!orderedIds.length){return;}
+    var ps=orderedIds.map(function(id,idx){
+      return supa.from('mh_menu').update({sort_order:idx}).eq('id',id);
+    });
+    Promise.all(ps).then(function(rs){
+      for(var i=0;i<rs.length;i++){if(rs[i]&&rs[i].error)throw new Error(sbErr(rs[i].error));}
+      return fetchAll();
+    }).catch(showErr);
+  }
 
   // ── User management ──
   function addUser(newEmail,newPass,newName,cb){
@@ -1178,30 +1278,25 @@ function App(props){
     var name=(newName||'').trim();
     if(!email||!pass||!name){cb('Email, password, and name are all required.');return;}
     var role=isAdminEmail(email)?'admin':'user';
-    var createdAuth=false;
-    secSupa.auth.signUp({email:email,password:pass,options:{data:{display_name:name}}})
-      .then(function(r){
-        if(r.error)throw new Error('Auth signup: '+r.error.message);
-        var u=r.data&&r.data.user;
-        if(!u||!u.id){
-          throw new Error('User creation did not return a valid account. The email may already be registered, or email confirmation may need to be disabled in Supabase → Authentication → Sign In / Providers → Email.');
-        }
-        if(Array.isArray(u.identities)&&u.identities.length===0){
-          throw new Error('This email is already registered. Use the existing user or pick a different email.');
-        }
-        createdAuth=true;
-        // upsert so a leftover/stale row doesn't break the flow
-        return supa.from('mh_users').upsert({id:u.id,email:email,display_name:name,role:role,active:true},{onConflict:'id'});
-      })
-      .then(function(r){
-        if(r&&r.error){
-          console.error('[addUser] mh_users upsert failed:',r.error);
-          throw new Error('Database write failed: '+sbErr(r.error)+(createdAuth?' (auth user was created — they can still confirm and log in; admin auto-create will run)':''));
-        }
-        return secSupa.auth.signOut();
-      })
-      .then(function(){fetchAll();cb(null,'User "'+name+'" added! A confirmation email has been sent to '+email+'.');})
-      .catch(function(e){console.error('[addUser]',e);cb(e.message);});
+    // Server-side atomic creation via user-admin Edge Function: handles dangling auth users,
+    // missing mh_users rows, and rolls back on partial failure so retry is always safe.
+    supa.auth.getSession().then(function(r){
+      var jwt=r&&r.data&&r.data.session&&r.data.session.access_token;
+      if(!jwt) throw new Error('Not signed in.');
+      var url=((window.GH_CONFIG||{}).supabaseUrl||'').replace(/\/rest\/v1\/?$/,'').replace(/\/$/,'')+'/functions/v1/user-admin';
+      return fetch(url,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+jwt,'apikey':SUPABASE_KEY},
+        body:JSON.stringify({action:'create-user',email:email,password:pass,displayName:name,role:role})
+      }).then(function(rs){return rs.json().then(function(j){
+        if(!rs.ok) throw new Error(j.error||('HTTP '+rs.status));
+        return j;
+      });});
+    }).then(function(j){
+      fetchAll();
+      var note=j.reused?' (linked to an existing auth account that was missing its app profile)':'';
+      cb(null,'User "'+name+'" added!'+note);
+    }).catch(function(e){console.error('[addUser]',e);cb(e.message);});
   }
   function toggleUserActive(id,current){
     supa.from('mh_users').update({active:!current}).eq('id',id)
@@ -1268,7 +1363,7 @@ function App(props){
   // superAdmin = strictly GH_ADMINS seeded emails → Users tab only
   var superAdmin=isAdminEmail(user.email);
   if(admin){tabs.push(['menu','Menu']);tabs.push(['customers','Cust']);}
-  if(superAdmin){tabs.push(['users','Users']);}
+  if(superAdmin){tabs.push(['users','Config']);}
 
   return h('div',{className:'wrap'},
     !online&&h('div',{style:{background:'#991B1B',color:'#fff',padding:'6px 12px',fontSize:12,fontWeight:600,textAlign:'center'}},
@@ -1296,7 +1391,7 @@ function App(props){
       tab==='orders'  &&h(OrdersTab,  {active,menu,cats,selId,setSelId,upsertItem,settle,delCust,setBillId,menuErr,setDiscount,setAdjustment,updateCustomer}),
       tab==='new'     &&h(NewTab,     {addCust,todayCnt:todayCount(custs),allCusts:custs,admin}),
       tab==='history' &&h(HistoryTab, {settled,todayRev,todaySett,cats,setBillId,delCust,admin,userEmail:user.email,users}),
-      tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem,toggleMenuAvail}),
+      tab==='menu'    &&admin&&h(MenuTab,{cats,saveCats,menu,addMenuItem,updateMenuItem,deleteMenuItem,toggleMenuAvail,reorderItems}),
       tab==='customers'&&admin&&h(CustomersTab,{custs}),
       tab==='users'   &&superAdmin&&h(UsersTab,{users,currentUid:user.id,currentEmail:user.email,superAdmin:superAdmin,addUser,toggleUserActive,changeUserRole,sendReset,deleteUser,sessionTimeout,saveSessionTimeout,backupDatabase,restoreFromBackup,driveInterval,saveDriveInterval,driveLast})
     ),
@@ -1350,27 +1445,38 @@ function OrderPanel(props){
   var grand=finalTotal(cust);
   function printKOT(){
     if(!cust.items.length){alert('No items to send to kitchen.');return;}
-    var css='*{box-sizing:border-box}body{font-family:"Courier New",monospace;font-size:14px;padding:14px;max-width:300px;margin:0 auto}h2{text-align:center;font-size:17px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}.inf{font-size:12px;margin-bottom:2px}.it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}.q{min-width:36px;text-align:right}.tm{font-size:9px;color:#777;font-weight:normal}.foot{text-align:center;font-size:10px;color:#777;margin-top:10px}';
+    var css='*{box-sizing:border-box}body{font-family:"Courier New","Liberation Mono",Consolas,monospace;font-size:12pt;padding:3mm;max-width:74mm;margin:0 auto;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-text-size-adjust:none;text-size-adjust:none}h2{text-align:center;font-size:17px;margin:0 0 2px}.sub{text-align:center;font-size:11px;color:#444;margin-bottom:8px;border-bottom:1px dashed #999;padding-bottom:6px}.inf{font-size:12px;margin-bottom:2px}.it{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:5px 0;border-bottom:1px dotted #ccc}.q{min-width:36px;text-align:right}.tm{font-size:9px;color:#777;font-weight:normal}.foot{text-align:center;font-size:10px;color:#777;margin-top:10px}';
     var rows=cust.items.map(function(i){
       var tms=itemTimes(i);
       var tStr=tms.length?'<br/><span class="tm">'+escHtml(tms.map(timeOf).join(' · '))+'</span>':'';
       return'<div class="it"><span>'+escHtml(i.name)+tStr+'</span><span class="q">x'+(Number(i.qty)||0)+'</span></div>';
     }).join('');
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>KOT_'+(cust.name||'').replace(/[^a-zA-Z0-9]/g,'')+'</title><style>'+css+'</style></head><body><h2>KITCHEN ORDER</h2><div class="sub">Gavthan — KOT</div><div class="inf"><b>'+escHtml(cust.name)+'</b> &nbsp; Room/Table: <b>'+escHtml(cust.room)+'</b></div><div class="inf">'+escHtml(dateOf(cust.date))+' &nbsp; '+escHtml(timeStr())+'</div><hr/>'+rows+'<div class="foot">--- Prepare above items ---</div></body></html>';
-    var iframe=document.createElement('iframe');
-    iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
-    document.body.appendChild(iframe);
-    var doc=iframe.contentDocument||iframe.contentWindow.document;
-    doc.open();doc.write(html);doc.close();
-    var prevTitle=document.title;document.title='KOT_'+(cust.name||'');
-    setTimeout(function(){
-      try{iframe.contentWindow.focus();iframe.contentWindow.print();}catch(e){alert('Print failed: '+e.message);}
-      setTimeout(function(){document.body.removeChild(iframe);document.title=prevTitle;},2000);
-    },300);
+    var bodyHtml='<h2>KITCHEN ORDER</h2><div class="sub">Gavthan — KOT</div><div class="inf"><b>'+escHtml(cust.name)+'</b> &nbsp; Room/Table: <b>'+escHtml(cust.room)+'</b></div><div class="inf">'+escHtml(dateOf(cust.date))+' &nbsp; '+escHtml(timeStr())+'</div><hr/>'+rows+'<div class="foot">--- Prepare above items ---</div>';
+    var title='KOT_'+(cust.name||'').replace(/[^a-zA-Z0-9]/g,'');
+    var fullCss='@page{size:80mm auto;margin:3mm}'+css;
+    printInNewWindow(title,fullCss,bodyHtml);
   }
   return h('div',{onClick:function(e){e.stopPropagation();}},
     h('div',{className:'hr'}),
-    cust.items.length>0&&h('div',null,
+    h('div',{style:{fontSize:11,color:'#B45309',fontWeight:700,letterSpacing:0.5,marginBottom:4}},'➕ ADD ITEMS'),
+    h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
+    h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',title:c,onClick:function(){setCat(c);},style:{fontSize:18,padding:'4px 10px',lineHeight:1}},catIcon(c));})),
+    h('div',{className:'sb'},filtered.length===0?h('div',{style:{fontSize:12,color:'#6b6b67',padding:8}},'No items.'):
+      filtered.map(function(mi){
+        var inO=cust.items.find(function(i){return i.id===mi.id;});
+        return h('div',{key:mi.id,className:'li'},
+          h('span',{style:{flex:1}},mi.name),
+          h('span',{className:'muted',style:{marginRight:4}},'₹'+mi.price),
+          inO&&h('button',{className:'qb',onClick:function(){upsertItem(cust.id,mi.id,-1);}},'-'),
+          inO&&h('span',{style:{minWidth:14,textAlign:'center'}},inO.qty),
+          h('button',{className:'qb',style:{background:'#B45309',color:'#fff',border:'none'},onClick:function(){upsertItem(cust.id,mi.id,1);}},'+')
+        );
+      })
+    ),
+    // ── Visible section divider between menu picker and current bill ──
+    cust.items.length>0&&h('div',{style:{borderTop:'2px dashed #B45309',marginTop:10,marginBottom:6,paddingTop:8}}),
+    cust.items.length>0&&h('div',{style:{background:'#FAEEDA',padding:'8px 10px',borderRadius:8,marginBottom:6}},
+      h('div',{style:{fontSize:11,color:'#27500A',fontWeight:700,letterSpacing:0.5,marginBottom:6}},'🧾 CURRENT ORDER'),
       h('div',{className:'sb'},cust.items.map(function(it){
         var tms=itemTimes(it);
         return h('div',{key:it.id,className:'li'},
@@ -1444,21 +1550,6 @@ function OrderPanel(props){
         onChange:function(e){setReason(e.target.value);},
         onBlur:function(){if(updateCustomer)updateCustomer(cust.id,{reason:reason.trim()});},
         onKeyDown:function(e){if(e.key==='Enter'&&updateCustomer)updateCustomer(cust.id,{reason:reason.trim()});}})
-    ),
-    h('div',{className:'hr'}),
-    h('input',{placeholder:'Search menu…',value:q,onChange:function(e){setQ(e.target.value);},style:{marginBottom:6}}),
-    h('div',{className:'cats'},cats.map(function(c){return h('button',{key:c,className:cat===c?'on':'',onClick:function(){setCat(c);}},c);})),
-    h('div',{className:'sb'},filtered.length===0?h('div',{style:{fontSize:12,color:'#6b6b67',padding:8}},'No items.'):
-      filtered.map(function(mi){
-        var inO=cust.items.find(function(i){return i.id===mi.id;});
-        return h('div',{key:mi.id,className:'li'},
-          h('span',{style:{flex:1}},mi.name),
-          h('span',{className:'muted',style:{marginRight:4}},'₹'+mi.price),
-          inO&&h('button',{className:'qb',onClick:function(){upsertItem(cust.id,mi.id,-1);}},'-'),
-          inO&&h('span',{style:{minWidth:14,textAlign:'center'}},inO.qty),
-          h('button',{className:'qb',style:{background:'#B45309',color:'#fff',border:'none'},onClick:function(){upsertItem(cust.id,mi.id,1);}},'+')
-        );
-      })
     ),
     h('div',{className:'hr'}),
     h('div',{className:'row',style:{gap:5}},
@@ -1676,23 +1767,87 @@ function HistoryTab(props){
   useEffect(function(){setPage(0);},[searchName,dateFrom,dateTo,selMonth,selYear,selStaff,filterMode]);
 
   function exportCSV(){
-    var headers=['Bill No','Customer','Room','Phone','Created','Settled At','Items','Total','Reason','Staff'];
-    function esc(v){v=String(v==null?'':v).replace(/"/g,'""');return /[",\n]/.test(v)?'"'+v+'"':v;}
-    var rows=shown.map(function(c){
-      var itemsStr=(c.items||[]).map(function(i){return i.name+'x'+i.qty+'@'+i.price;}).join('; ');
-      return [c.bill_no||'',c.name,c.room,c.phone||'',
-        c.date?new Date(c.date).toLocaleString('en-IN'):'',
-        c.settled_at?new Date(c.settled_at).toLocaleString('en-IN'):'',
-        itemsStr,finalTotal(c),(c.discount_on||c.adjustment_on)?(c.reason||''):'',c.added_by||''
-      ].map(esc).join(',');
+    if(typeof XLSX==='undefined'){alert('Excel library not loaded. Check your internet connection and reload.');return;}
+    // ── 1) Build filter-parameters block (top-left of the sheet) ──
+    var modeLabel='All time';
+    if(filterMode==='month') modeLabel='Month: '+monthNames[Number(selMonth)-1]+' '+selYear;
+    else if(filterMode==='year') modeLabel='Year: '+selYear;
+    else if(dateFrom||dateTo) modeLabel='Date range: '+(dateFrom||'…')+' to '+(dateTo||'…');
+    var staffLabel=(selStaff==='all')?'All staff':selStaff;
+    var nameFilter=searchName||'(none)';
+    var generatedAt=new Date().toLocaleString('en-IN');
+
+    var aoa=[]; // array of arrays, becomes the sheet
+    aoa.push(['Gavthan — Sales Report']);
+    aoa.push([]);
+    aoa.push(['Generated:', generatedAt]);
+    aoa.push(['Filter — period:', modeLabel]);
+    aoa.push(['Filter — staff:', staffLabel]);
+    aoa.push(['Filter — customer/room search:', nameFilter]);
+    aoa.push(['Bills in report:', shown.length]);
+    aoa.push(['Revenue total:', shownRev]);
+    aoa.push([]); // spacer
+    var headerRowIdx=aoa.length;
+    aoa.push(['Bill No','Settled At','Customer','Room/Table','Phone','Item','Qty','Rate','Item Amt','Bill Subtotal','Discount %','Discount Amt','Adjustment','Reason','Bill Total','Staff']);
+
+    // ── 2) Body rows: one row per ITEM (so qty/rate are real cells) ──
+    var grandQty=0, grandAmt=0;
+    shown.forEach(function(c){
+      var sub=rawTotal(c), dA=discountAmt(c), aA=adjustAmt(c), tot=finalTotal(c);
+      var items=(c.items||[]);
+      if(items.length===0){
+        // Bill with no items still appears once
+        aoa.push([
+          c.bill_no?fmtBill(c.bill_no):'', c.settled_at||c.date||'', c.name||'', c.room||'', c.phone||'',
+          '(no items)','','','', sub,
+          c.discount_on?(Number(c.discount_pct)||0):'', dA||'',
+          c.adjustment_on?aA:'', (c.discount_on||c.adjustment_on)?(c.reason||''):'',
+          tot, c.added_by||''
+        ]);
+      } else {
+        items.forEach(function(it,idx){
+          var q=Number(it.qty)||0, r=Number(it.price)||0, amt=q*r;
+          grandQty+=q; grandAmt+=amt;
+          aoa.push([
+            idx===0?(c.bill_no?fmtBill(c.bill_no):''):'',
+            idx===0?(c.settled_at||c.date||''):'',
+            idx===0?(c.name||''):'',
+            idx===0?(c.room||''):'',
+            idx===0?(c.phone||''):'',
+            it.name||'', q, r, amt,
+            idx===0?sub:'',
+            idx===0?(c.discount_on?(Number(c.discount_pct)||0):''):'',
+            idx===0?(dA||''):'',
+            idx===0?(c.adjustment_on?aA:''):'',
+            idx===0?((c.discount_on||c.adjustment_on)?(c.reason||''):''):'',
+            idx===0?tot:'',
+            idx===0?(c.added_by||''):''
+          ]);
+        });
+      }
     });
-    var csv=headers.join(',')+'\n'+rows.join('\n');
-    var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); // BOM for Excel
-    var url=URL.createObjectURL(blob);
-    var a=document.createElement('a');
-    a.href=url;a.download='gavthan-orders-'+new Date().toISOString().slice(0,10)+'.csv';
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
-    setTimeout(function(){URL.revokeObjectURL(url);},1000);
+
+    // ── 3) Totals row at the bottom ──
+    aoa.push([]);
+    aoa.push(['TOTAL','','','','','', grandQty,'', grandAmt,'','','','','', shownRev,'']);
+
+    // ── 4) Build worksheet with styles + column widths ──
+    var ws=XLSX.utils.aoa_to_sheet(aoa);
+    // Column widths
+    ws['!cols']=[
+      {wch:11},{wch:18},{wch:18},{wch:10},{wch:13},{wch:24},{wch:6},{wch:8},{wch:10},
+      {wch:11},{wch:10},{wch:11},{wch:11},{wch:22},{wch:10},{wch:24}
+    ];
+    // Merge title cell across the header columns
+    if(!ws['!merges']) ws['!merges']=[];
+    ws['!merges'].push({s:{r:0,c:0},e:{r:0,c:15}}); // title row spans all cols
+
+    // ── 5) Workbook ──
+    var wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Sales Report');
+
+    var fname='gavthan-sales-'+new Date().toISOString().slice(0,10)+'.xlsx';
+    XLSX.writeFile(wb,fname);
   }
   var months=['01','02','03','04','05','06','07','08','09','10','11','12'];
   var monthNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -1738,7 +1893,7 @@ function HistoryTab(props){
       h('div',{className:'row bw',style:{marginBottom:10,flexWrap:'wrap',gap:6}},
         h('div',{className:'ttl',style:{margin:0}},'Billing History'),
         h('div',{className:'row',style:{gap:4}},
-          shown.length>0&&h('button',{className:'btn xs btn-g',onClick:exportCSV,title:'Download filtered orders as CSV'},'⬇ Export CSV'),
+          shown.length>0&&h('button',{className:'btn xs btn-g',onClick:exportCSV,title:'Download filtered orders as Excel (.xlsx)'},'⬇ Export Excel'),
           hasFilter&&h('button',{className:'btn xs btn-r',onClick:function(){setSearchName('');setDateFrom('');setDateTo('');setSelStaff('all');setFilterMode('date');}},'✕ Clear')
         )
       ),
@@ -1821,6 +1976,7 @@ function MenuTab(props){
   var cats=props.cats,saveCats=props.saveCats,menu=props.menu;
   var addMenuItem=props.addMenuItem,updateMenuItem=props.updateMenuItem,deleteMenuItem=props.deleteMenuItem;
   var toggleMenuAvail=props.toggleMenuAvail;
+  var reorderItems=props.reorderItems;
   var _sel=useState(cats[0]||'');var selCat=_sel[0];var setSelCat=_sel[1];
   var _nc=useState('');var newCat=_nc[0];var setNewCat=_nc[1];
   var _eci=useState(null);var editCatId=_eci[0];var setEditCatId=_eci[1];
@@ -1830,6 +1986,8 @@ function MenuTab(props){
   var _ei=useState(null);var editId=_ei[0];var setEditId=_ei[1];
   var _en=useState('');var editN=_en[0];var setEditN=_en[1];
   var _ep=useState('');var editP=_ep[0];var setEditP=_ep[1];
+  var catListRef=useRef(null);
+  var itemListRef=useRef(null);
 
   function doAddCat(){var n=newCat.trim();if(!n)return;if(cats.indexOf(n)!==-1){alert('Already exists.');return;}saveCats(cats.concat([n]),null,null);setSelCat(n);setNewCat('');}
   function doSaveCat(){var n=editCatVal.trim();if(!n){alert('Name required.');return;}saveCats(cats.map(function(c){return c===editCatId?n:c;}),editCatId,n);if(selCat===editCatId)setSelCat(n);setEditCatId(null);}
@@ -1838,9 +1996,53 @@ function MenuTab(props){
   function doSaveItem(){var n=editN.trim();var p=parseInt(editP);if(!n||isNaN(p)||p<0){alert('Valid name and price.');return;}updateMenuItem(editId,n,p);setEditId(null);}
   var selItems=menu.filter(function(m){return m.cat===selCat;});
 
+  // ── Drag-and-drop wiring (SortableJS — works on mobile touch out of the box) ──
+  // handle:'.dh' restricts drag activation to the ⋮⋮ grip. filter+preventOnFilter:false ensures
+  // taps on inputs/buttons inside rows pass through to React (otherwise Sortable swallows them).
+  useEffect(function(){
+    if(typeof Sortable==='undefined'||!catListRef.current)return;
+    var s=Sortable.create(catListRef.current,{
+      animation:150,
+      handle:'.dh',
+      draggable:'[data-cat]',
+      filter:'button, input, .editrow',
+      preventOnFilter:false,
+      ghostClass:'sort-ghost',
+      onEnd:function(evt){
+        if(evt.oldIndex===evt.newIndex)return;
+        var nodes=Array.prototype.slice.call(catListRef.current.querySelectorAll('[data-cat]'));
+        var newOrder=nodes.map(function(n){return n.getAttribute('data-cat');});
+        // Defensive: keep only cats that actually exist (filter renamed/deleted from stale DOM)
+        var valid=newOrder.filter(function(c){return cats.indexOf(c)!==-1;});
+        if(valid.length===cats.length) saveCats(valid,null,null);
+      }
+    });
+    return function(){try{s.destroy();}catch(e){}};
+  },[cats.join('|')]);
+
+  useEffect(function(){
+    if(typeof Sortable==='undefined'||!itemListRef.current||!reorderItems)return;
+    var s=Sortable.create(itemListRef.current,{
+      animation:150,
+      handle:'.dh',
+      draggable:'[data-itemid]',
+      filter:'button, input, .editrow',
+      preventOnFilter:false,
+      ghostClass:'sort-ghost',
+      onEnd:function(evt){
+        if(evt.oldIndex===evt.newIndex)return;
+        var nodes=Array.prototype.slice.call(itemListRef.current.querySelectorAll('[data-itemid]'));
+        var ids=nodes.map(function(n){return n.getAttribute('data-itemid');});
+        if(ids.length) reorderItems(ids);
+      }
+    });
+    return function(){try{s.destroy();}catch(e){}};
+  },[selCat,selItems.map(function(i){return i.id;}).join('|')]);
+
   return h('div',null,
     h('div',{className:'card'},
       h('div',{className:'ttl'},'Categories'),
+      h('div',{className:'muted',style:{fontSize:11,marginBottom:8}},'Drag the ⋮⋮ handle to reorder.'),
       h('div',{className:'addbx',style:{marginBottom:10}},
         h('div',{className:'addbx-lbl'},'Add Category'),
         h('div',{className:'row'},
@@ -1848,30 +2050,36 @@ function MenuTab(props){
           h('button',{className:'btn btn-a xs',style:{flexShrink:0},onClick:doAddCat},'+ Add')
         )
       ),
-      cats.map(function(cat){
+      h('div',{ref:catListRef},cats.map(function(cat){
         var cnt=menu.filter(function(m){return m.cat===cat;}).length;
-        if(editCatId===cat)return h('div',{key:cat,style:{marginBottom:6}},h('div',{className:'editrow row'},
+        if(editCatId===cat)return h('div',{key:cat,'data-cat':cat,style:{marginBottom:6}},h('div',{className:'editrow row'},
           h('input',{value:editCatVal,onChange:function(e){setEditCatVal(e.target.value);},autoFocus:true,style:{flex:1,fontSize:12},onKeyDown:function(e){if(e.key==='Enter')doSaveCat();if(e.key==='Escape')setEditCatId(null);}}),
           h('button',{className:'btn btn-a xs',onClick:doSaveCat},'✓ Save'),
           h('button',{className:'btn xs',onClick:function(){setEditCatId(null);}},'Cancel')
         ));
-        return h('div',{key:cat,style:{marginBottom:6}},
+        return h('div',{key:cat,'data-cat':cat,style:{marginBottom:6}},
           h('div',{className:'row bw',style:{background:cat===selCat?'#f0ede8':'#fff',border:'1px solid #e0ddd6',borderRadius:8,padding:'7px 10px',cursor:'pointer'},onClick:function(){setSelCat(cat);}},
-            h('div',{className:'row',style:{gap:6}},h(Chip,{cat,cats}),h('span',{style:{fontWeight:cat===selCat?700:400}},cat),h('span',{className:'muted',style:{fontSize:11}},cnt+' item'+(cnt!==1?'s':''))),
+            h('div',{className:'row',style:{gap:6,flex:1,minWidth:0}},
+              h('span',{className:'dh',title:'Drag to reorder',onClick:function(e){e.stopPropagation();},style:{cursor:'grab',touchAction:'none',userSelect:'none',color:'#9b9b97',padding:'0 4px',fontSize:14,fontWeight:700}},'⋮⋮'),
+              h(Chip,{cat,cats}),
+              h('span',{style:{fontWeight:cat===selCat?700:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},cat),
+              h('span',{className:'muted',style:{fontSize:11}},cnt+' item'+(cnt!==1?'s':''))
+            ),
             h('div',{className:'row',style:{gap:4}},
               h('button',{className:'btn xs',onClick:function(e){e.stopPropagation();setEditCatId(cat);setEditCatVal(cat);}},'✏ Rename'),
               h('button',{className:'btn btn-r xs',onClick:function(e){e.stopPropagation();doDelCat(cat);}},'🗑 Delete')
             )
           )
         );
-      })
+      }))
     ),
     selCat&&h('div',{className:'card'},
       h('div',{className:'row bw',style:{marginBottom:10}},h('div',{className:'ttl',style:{margin:0}},'Items in:'),h(Chip,{cat:selCat,cats})),
       selItems.length===0&&h('div',{className:'muted',style:{fontSize:12,marginBottom:8}},'No items. Add below.'),
-      h('div',{className:'sb',style:{marginBottom:8}},
+      selItems.length>0&&h('div',{className:'muted',style:{fontSize:11,marginBottom:8}},'Drag the ⋮⋮ handle to reorder.'),
+      h('div',{ref:itemListRef,className:'sb',style:{marginBottom:8}},
         selItems.map(function(it){
-          if(editId===it.id)return h('div',{key:it.id,className:'editrow',style:{marginBottom:4}},
+          if(editId===it.id)return h('div',{key:it.id,'data-itemid':it.id,className:'editrow',style:{marginBottom:4}},
             h('div',{className:'muted',style:{fontSize:11,marginBottom:6}},'Editing: ',h('strong',null,it.name)),
             h('div',{className:'row',style:{marginBottom:6}},
               h('input',{value:editN,onChange:function(e){setEditN(e.target.value);},style:{flex:2},autoFocus:true,onKeyDown:function(e){if(e.key==='Enter')doSaveItem();}}),
@@ -1880,8 +2088,9 @@ function MenuTab(props){
             h('div',{className:'row',style:{gap:4}},h('button',{className:'btn btn-a xs',onClick:doSaveItem},'✓ Save'),h('button',{className:'btn xs',onClick:function(){setEditId(null);}},'Cancel'))
           );
           var avail=it.available!==false;
-          return h('div',{key:it.id,className:'li',style:{opacity:avail?1:0.55}},
-            h('span',{style:{flex:1}},it.name,!avail&&h('span',{style:{fontSize:10,color:'#991B1B',fontWeight:700,marginLeft:5}},'OUT OF STOCK')),
+          return h('div',{key:it.id,'data-itemid':it.id,className:'li',style:{opacity:avail?1:0.55}},
+            h('span',{className:'dh',title:'Drag to reorder',style:{cursor:'grab',touchAction:'none',userSelect:'none',color:'#9b9b97',padding:'0 4px',fontSize:14,fontWeight:700,flexShrink:0}},'⋮⋮'),
+            h('span',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},it.name,!avail&&h('span',{style:{fontSize:10,color:'#991B1B',fontWeight:700,marginLeft:5}},'OUT OF STOCK')),
             h('span',{style:{fontWeight:700,color:'#B45309',minWidth:40,textAlign:'right'}},'₹'+it.price),
             h('button',{className:'btn xs '+(avail?'btn-r':'btn-g'),style:{marginLeft:8},onClick:function(){toggleMenuAvail(it.id,!avail);}},avail?'Mark Out':'Mark In'),
             h('button',{className:'btn xs',onClick:function(){setEditId(it.id);setEditN(it.name);setEditP(''+it.price);}},'✏ Edit'),
@@ -2087,8 +2296,10 @@ function UsersTab(props){
         h('input',{value:thermSettings.wsUrl||'',placeholder:'ws://lan-ip:8088',
           onChange:function(e){saveThermSettings(Object.assign({},thermSettings,{wsUrl:e.target.value}));}})
       ),
-      h('div',{className:'muted',style:{fontSize:10}},
-        ThermalPrinter.isBTSupported()?'✓ Web Bluetooth available on this device.':'⚠ Web Bluetooth NOT available (iOS/Safari) — use the WebSocket relay option.'
+      h('div',{className:'muted',style:{fontSize:10,whiteSpace:'pre-line'}},
+        ThermalPrinter.isBTSupported()
+          ? '✓ Web Bluetooth available on this device.\nIf you get "globally disabled" error: open chrome://flags, search "Web Bluetooth", enable it, then relaunch Chrome — OR switch to WebSocket relay.'
+          : '⚠ Web Bluetooth NOT available on this browser (iOS Safari / disabled Chrome).\nUse the WebSocket relay option — runs a tiny helper on any LAN device.'
       )
     ),
     // Backup & Restore card
@@ -2321,25 +2532,13 @@ function BillModal(props){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
     stampBillTime();
     var bill=buildBillHTML();
-    // Filename = CustomerName_Amount (browser uses <title> as PDF save name)
-    var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
-    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>'+fname+'</title><style>'+bill.css+'</style></head><body>'+bill.body+'</body></html>';
-    var iframe=document.createElement('iframe');
-    iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
-    document.body.appendChild(iframe);
-    var doc=iframe.contentDocument||iframe.contentWindow.document;
-    doc.open();doc.write(html);doc.close();
-    // Browsers use the PARENT document title for the "Save as PDF" filename
-    var prevTitle=document.title;
-    document.title=fname;
-    setTimeout(function(){
-      try{iframe.contentWindow.focus();iframe.contentWindow.print();}
-      catch(e){alert('Print failed: '+e.message);}
-      setTimeout(function(){
-        document.body.removeChild(iframe);
-        document.title=prevTitle;
-      },2000);
-    },300);
+    var title=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t;
+    // Strip @page/@media print from the embedded css — we re-apply @page at the top of fullCss.
+    var cleanCss=bill.css
+      .replace(/@page\s*\{[^}]*\}/g,'')
+      .replace(/@media\s+print\s*\{[^}]*\}/g,'');
+    var fullCss='@page{size:80mm auto;margin:3mm}'+cleanCss;
+    printInNewWindow(title,fullCss,bill.body);
   }
   // Builds the receipt HTML used by both Print and JPEG export (identical layout)
   function buildBillHTML(){
