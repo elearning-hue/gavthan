@@ -6,6 +6,7 @@
 <title>Gavthan — Billing</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
 <script>
@@ -743,7 +744,7 @@ function catIcon(cat){
   if(c.indexOf('soup')!==-1) return '🍲';
   if(c.indexOf('curry')!==-1) return '🍛';
   if(c.indexOf('seafood')!==-1||c.indexOf('fish')!==-1) return '🐟';
-  if(c.indexOf('egg')!==-1) return '🥚';  
+  if(c.indexOf('egg')!==-1) return '🥚';
   if(c.indexOf('cigarette')!==-1||c.indexOf('smoke')!==-1) return '🚬';
   return '🍽';
 }
@@ -1192,6 +1193,15 @@ function App(props){
     }
     if(!confirm('Settle this customer?'))return;
     var now=new Date().toISOString();
+    // bill_time = printed bill date. For backdated orders, keep the order's historical
+    // calendar day (with current time-of-day); for same-day orders it's just now.
+    var billStamp=(function(){
+      var n=new Date();
+      var base=cust.date?new Date(cust.date):n;
+      if(base.toDateString()===n.toDateString())return now;
+      return new Date(base.getFullYear(),base.getMonth(),base.getDate(),
+        n.getHours(),n.getMinutes(),n.getSeconds()).toISOString();
+    })();
     // Assign a sequential bill number from the mh_config counter
     supa.from('mh_config').select('data').eq('id','app').maybeSingle()
       .then(function(r){
@@ -1201,7 +1211,7 @@ function App(props){
         return supa.from('mh_config').upsert({id:'app',data:cfg}).then(function(){return nextNo;});
       })
       .then(function(nextNo){
-        return supa.from('mh_customers').update({status:'settled',settled_at:now,bill_time:now,bill_no:nextNo}).eq('id',cid);
+        return supa.from('mh_customers').update({status:'settled',settled_at:now,bill_time:billStamp,bill_no:nextNo}).eq('id',cid);
       })
       .then(function(r){if(r.error)throw new Error(sbErr(r.error));return fetchAll();})
       .then(function(){if(selId===cid)setSelId(null);})
@@ -1451,7 +1461,16 @@ function OrderPanel(props){
   // Reason is needed (enabled + mandatory) whenever a discount % or a non-zero adjustment is entered.
   // Derived from live input state so it toggles instantly as the user types.
   var reasonNeeded=(Number(disc)||0)>0||(Number(adj)||0)!==0;
-  var filtered=menu.filter(function(m){return m.cat===cat&&m.available!==false&&m.name.toLowerCase().indexOf(q.toLowerCase())!==-1;});
+  // Item filter: when a search query is present, search ALL categories (global);
+  // when the box is empty, show only the selected category. Each result row shows
+  // its own category chip (mi-pick markup) so cross-category hits are clear.
+  var qq=q.trim().toLowerCase();
+  var filtered=menu.filter(function(m){
+    if(m.available===false)return false;
+    var matchesQ=qq?m.name.toLowerCase().indexOf(qq)!==-1:true;
+    if(!matchesQ)return false;
+    return qq?true:m.cat===cat;
+  });
   var raw=rawTotal(cust);
   var dAmt=discountAmt(cust);
   var aAmt=adjustAmt(cust);
@@ -2531,10 +2550,23 @@ function BillModal(props){
     });
   }
   function stampBillTime(){
-    // Always refresh to the moment of printing/finalizing (not the order-start time).
-    var nowIso=new Date().toISOString();
-    cust.bill_time=nowIso;
-    if(updateCustomer) updateCustomer(cust.id,{bill_time:nowIso});
+    // The bill's printed date must reflect the ORDER's historical date for backdated
+    // bills, not "today". So: if the order date (cust.date) falls on a different
+    // calendar day than today, keep that historical day and only set the time-of-day
+    // to now. For same-day orders, stamp the full current datetime (print moment).
+    var now=new Date();
+    var base=cust.date?new Date(cust.date):now;
+    var sameDay=base.toDateString()===now.toDateString();
+    var stamp;
+    if(sameDay){
+      stamp=now;
+    } else {
+      stamp=new Date(base.getFullYear(),base.getMonth(),base.getDate(),
+        now.getHours(),now.getMinutes(),now.getSeconds());
+    }
+    var iso=stamp.toISOString();
+    cust.bill_time=iso;
+    if(updateCustomer) updateCustomer(cust.id,{bill_time:iso});
   }
   function printBill(){
     if(t===0){alert('Cannot print a zero-amount bill. Add items first.');return;}
@@ -2569,9 +2601,42 @@ function BillModal(props){
   function saveJPEG(){
     if(t===0){alert('Cannot save a zero-amount bill. Add items first.');return;}
     if(typeof html2canvas==='undefined'){alert('Image library not loaded. Check your internet connection and reload.');return;}
+    renderBillCanvas(function(canvas){
+      var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t+'.jpg';
+      canvas.toBlob(function(blob){
+        if(!blob){alert('Could not generate image.');return;}
+        var url=URL.createObjectURL(blob);
+        var a=document.createElement('a');
+        a.href=url;a.download=fname;
+        document.body.appendChild(a);a.click();document.body.removeChild(a);
+        setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      },'image/jpeg',0.9);
+    },function(e){alert('Image export failed: '+e.message);});
+  }
+  function savePDF(){
+    if(t===0){alert('Cannot save a zero-amount bill. Add items first.');return;}
+    if(typeof html2canvas==='undefined'){alert('Image library not loaded. Check your internet connection and reload.');return;}
+    var JsPDF=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
+    if(!JsPDF){alert('PDF library not loaded. Check your internet connection and reload.');return;}
+    renderBillCanvas(function(canvas){
+      try{
+        // 80mm-wide page (thermal width); height scales to content → whole bill on ONE page.
+        var pageWmm=80;
+        var pageHmm=pageWmm*(canvas.height/canvas.width);
+        var pdf=new JsPDF({orientation:'portrait',unit:'mm',format:[pageWmm,pageHmm]});
+        var img=canvas.toDataURL('image/jpeg',0.92);
+        pdf.addImage(img,'JPEG',0,0,pageWmm,pageHmm);
+        var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t+'.pdf';
+        pdf.save(fname);
+      }catch(e){alert('PDF export failed: '+e.message);}
+    },function(e){alert('PDF export failed: '+e.message);});
+  }
+  // Shared renderer: writes the bill HTML into an offscreen iframe (identical markup to
+  // print/JPEG), rasterizes via html2canvas, hands the canvas to onDone. Used by both
+  // saveJPEG and savePDF so the two outputs are pixel-identical.
+  function renderBillCanvas(onDone,onErr){
     stampBillTime();
     var bill=buildBillHTML();
-    // Render in an iframe with the IDENTICAL HTML used for print → pixel-perfect match
     var iframe=document.createElement('iframe');
     iframe.style.cssText='position:fixed;left:-9999px;top:0;width:380px;height:1200px;border:0;background:#fff';
     document.body.appendChild(iframe);
@@ -2581,19 +2646,11 @@ function BillModal(props){
     setTimeout(function(){
       var body=doc.body;
       html2canvas(body,{backgroundColor:'#ffffff',scale:2,width:body.scrollWidth,height:body.scrollHeight,windowWidth:body.scrollWidth,windowHeight:body.scrollHeight}).then(function(canvas){
-        var fname=(cust.name||'Bill').replace(/[^a-zA-Z0-9]/g,'')+'_'+t+'.jpg';
-        canvas.toBlob(function(blob){
-          document.body.removeChild(iframe);
-          if(!blob){alert('Could not generate image.');return;}
-          var url=URL.createObjectURL(blob);
-          var a=document.createElement('a');
-          a.href=url;a.download=fname;
-          document.body.appendChild(a);a.click();document.body.removeChild(a);
-          setTimeout(function(){URL.revokeObjectURL(url);},1000);
-        },'image/jpeg',0.9);
+        if(iframe.parentNode) document.body.removeChild(iframe);
+        try{onDone(canvas);}catch(e){if(onErr)onErr(e);}
       }).catch(function(e){
         if(iframe.parentNode) document.body.removeChild(iframe);
-        alert('Image export failed: '+e.message);
+        if(onErr)onErr(e);
       });
     },200);
   }
@@ -2614,6 +2671,7 @@ function BillModal(props){
       h('div',{className:'mhdr'},h('span',{style:{fontWeight:700,fontSize:13}},'Bill — '+cust.name),h('div',{className:'row',style:{gap:5,flexWrap:'wrap'}},
         h('button',{className:'btn btn-a xs',onClick:printBill},'🖨 Print'),
         h('button',{className:'btn xs',onClick:saveJPEG},'🖼 JPEG'),
+        h('button',{className:'btn xs',style:{background:'#B91C1C',color:'#fff',borderColor:'#B91C1C'},onClick:savePDF},'📄 PDF'),
         h('button',{className:'btn xs',style:{background:'#0F766E',color:'#fff',borderColor:'#0F766E'},onClick:thermalPrint},'🧾 Thermal'),
         h('button',{className:'btn xs',style:{background:'#25D366',color:'#fff',borderColor:'#25D366'},onClick:sendWhatsApp},'📱 WhatsApp'),
         h('button',{className:'btn xs',style:{background:'#2563eb',color:'#fff',borderColor:'#2563eb'},onClick:sendSMS},'💬 SMS'),
