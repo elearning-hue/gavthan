@@ -152,21 +152,63 @@
      ========================================================= -->
 <script>
   window.GH_CONFIG = {
-   supabaseUrl: "https://glaksnwcmiijiztsncvi.supabase.co",
+      supabaseUrl: "https://glaksnwcmiijiztsncvi.supabase.co",
   supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
     hotelName:       "Gavthan",
     currency:        "\u20B9"                              // ₹
   };
 </script>
 
-<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js" crossorigin></script>
-<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js" crossorigin></script>
+<script>
+  // Records any CDN script that fails to download, and turns a blank page into a readable message.
+  window.__loadErrors = [];
+  window.__libFail = function(n){ window.__loadErrors.push(n); };
+  window.addEventListener("error", function(e){
+    var root = document.getElementById("root");
+    if(root && !root.firstChild){
+      root.innerHTML =
+        '<div style="max-width:440px;margin:46px auto;padding:24px;font-family:system-ui,sans-serif;color:#2a251d;background:#fffdf7;border:1px solid #e6dcc6;border-radius:14px">'
+        + '<h2 style="font-family:Georgia,serif;margin:0 0 8px">&#9888; Could not start the app</h2>'
+        + '<div style="color:#8b8071;font-size:14px;line-height:1.5">'+ (e.message||e.type||"Script error")
+        + '<br><br>Open the console (F12 &rarr; Console) and send me the red error text.</div></div>';
+    }
+  });
+</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" onerror="__libFail('React')"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" onerror="__libFail('ReactDOM')"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3/dist/htm.umd.js" onerror="__libFail('htm')"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="__libFail('supabase-js')"></script>
 
 <script>
 "use strict";
 (function(){
+  function fatal(title, detail){
+    var root = document.getElementById("root");
+    root.innerHTML =
+      '<div style="max-width:440px;margin:46px auto;padding:24px;font-family:system-ui,sans-serif;color:#2a251d;background:#fffdf7;border:1px solid #e6dcc6;border-radius:14px">'
+      + '<h2 style="font-family:Georgia,serif;margin:0 0 8px">&#9888; '+title+'</h2>'
+      + '<div style="color:#8b8071;font-size:14px;line-height:1.55">'+detail+'</div></div>';
+  }
+  // Pre-flight: make sure every library actually loaded before we touch it.
+  var miss=[];
+  if(typeof React==="undefined") miss.push("React");
+  if(typeof ReactDOM==="undefined") miss.push("ReactDOM");
+  if(typeof htm==="undefined") miss.push("htm");
+  if(typeof window.supabase==="undefined" || !window.supabase.createClient) miss.push("supabase-js");
+  if((window.__loadErrors&&window.__loadErrors.length) || miss.length){
+    var bad = (window.__loadErrors||[]).concat(miss).filter(function(v,i,a){return a.indexOf(v)===i;});
+    fatal("A required library didn't load",
+      "Missing: <b>"+bad.join(", ")+"</b>.<br><br>This is almost always the network blocking the CDN. "
+      + "Try a different network (e.g. mobile data) to confirm, then tell me and I can self-host the libraries inside the file.");
+    return;
+  }
+  var C = window.GH_CONFIG || {};
+  if(!C.supabaseUrl || C.supabaseUrl.indexOf("YOUR-PROJECT")>=0 || !C.supabaseAnonKey || C.supabaseAnonKey.indexOf("PASTE_")>=0){
+    fatal("Supabase keys not set",
+      "Edit the <b>GH_CONFIG</b> block near the bottom of this file, paste your project URL and the legacy anon (eyJ&hellip;) key, then re-deploy to GitHub.");
+    return;
+  }
+
   const { useState, useEffect, useMemo, useRef, useCallback } = React;
   const html = htm.bind(React.createElement);
   const CFG = window.GH_CONFIG || {};
@@ -798,7 +840,11 @@
     </div>`;
   }
 
-  ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+  try{
+    ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+  }catch(e){
+    fatal("App failed to start", String((e&&e.message)||e)+"<br><br>Please send me this message and the console error.");
+  }
 })();
 </script>
 </body>
