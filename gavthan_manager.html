@@ -395,6 +395,7 @@
     const [year,setYear]=useState(String(new Date().getFullYear()));
     const [dFrom,setDFrom]=useState(""); const [dTo,setDTo]=useState("");
     const [staff,setStaff]=useState("all");
+    const [catF,setCatF]=useState("all");
     const [kind,setKind]=useState("all");
     const [q,setQ]=useState("");
 
@@ -444,9 +445,16 @@
       return true;
     };
     const matchStaff=(e)=> staff==="all" || e.created_by===staff;
+    const matchCat=(e)=> catF==="all" || (e.category||"")===catF;
     const matchText=(e)=> !q.trim() || (String(e.note||"")+" "+String(e.category||"")).toLowerCase().indexOf(q.trim().toLowerCase())>=0;
 
-    const periodEntries=useMemo(()=> entries.filter(e=> inPeriod(dateOf(e)) && matchStaff(e) && matchText(e)),[entries,mode,month,year,dFrom,dTo,staff,q]);
+    const catOpts=useMemo(()=>{
+      const s=new Set(); entries.forEach(e=>{ if(e.category) s.add(e.category); });
+      INCOME_CATS.concat(EXPENSE_CATS).forEach(c=>s.add(c));
+      return Array.from(s).sort();
+    },[entries]);
+
+    const periodEntries=useMemo(()=> entries.filter(e=> inPeriod(dateOf(e)) && matchStaff(e) && matchCat(e) && matchText(e)),[entries,mode,month,year,dFrom,dTo,staff,catF,q]);
     const income = useMemo(()=> periodEntries.filter(e=>kindOf(e)==="income").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
     const expense= useMemo(()=> periodEntries.filter(e=>kindOf(e)==="expense").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
     const net = income-expense;
@@ -456,7 +464,7 @@
     const totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
     const safePage=Math.min(page,totalPages-1);
     const pageItems=useMemo(()=> shown.slice(safePage*PAGE_SIZE,(safePage+1)*PAGE_SIZE),[shown,safePage]);
-    useEffect(()=>{ setPage(0); },[mode,month,year,dFrom,dTo,staff,kind,q]);
+    useEffect(()=>{ setPage(0); },[mode,month,year,dFrom,dTo,staff,catF,kind,q]);
     const pageBtns=useMemo(()=>{
       const out=[]; let lo=Math.max(0,safePage-2), hi=Math.min(totalPages-1,lo+4); lo=Math.max(0,hi-4);
       for(let p=lo;p<=hi;p++) out.push(p); return out;
@@ -540,6 +548,11 @@
           <option value="all">All staff</option>
           ${staffOpts.map(o=> html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
         </select>
+        <label>Category</label>
+        <select value=${catF} onChange=${e=>setCatF(e.target.value)}>
+          <option value="all">All categories</option>
+          ${catOpts.map(c=> html`<option key=${c} value=${c}>${(CAT_EMOJI[c]||"")+" "+c}</option>`)}
+        </select>
         <div class="search" style=${{marginTop:10}}><span class="ic">🔍</span>
           <input placeholder="Search description / category" value=${q} onChange=${e=>setQ(e.target.value)}/></div>
       </div></div>
@@ -549,7 +562,7 @@
         <div class="stat red"><div class="k">Expense</div><div class="v">${money(expense)}</div></div>
       </div>
       <div class="stat" style=${{marginTop:10}}>
-        <div class="k">Net · ${periodLabel}${staff!=="all"?(" · "+dispName(staff,userMap)):""}</div>
+        <div class="k">Net · ${periodLabel}${staff!=="all"?(" · "+dispName(staff,userMap)):""}${catF!=="all"?(" · "+catF):""}</div>
         <div class="v" style=${{color: net>=0?'var(--credit)':'var(--debit)'}}>${money(net)}</div>
       </div>
 
@@ -714,7 +727,8 @@
         const hdr=(aoa[hi]||[]).map(x=>String(x).toLowerCase().trim());
         const find=(re)=> hdr.findIndex(c=>re.test(c));
         const ci={ date:find(/date|dt/), desc:find(/desc|particular|narration|detail|note|remark/),
-          user:find(/user|staff|\bby\b|name|cashier|emp/), dr:find(/^dr$|debit/), cr:find(/^cr$|credit/), amt:find(/amount|amt/) };
+          user:find(/account|user|staff|\bby\b|name|cashier|emp/), cat:find(/categ|head|group/),
+          dr:find(/^dr$|debit/), cr:find(/^cr$|credit/), amt:find(/amount|amt/) };
         if(ci.dr<0 && ci.cr<0 && ci.amt<0){ setErr("Couldn't find a Dr/Cr or Amount column. Headers seen: "+hdr.filter(Boolean).join(", ")); return; }
         const out=[];
         for(let i=hi+1;i<aoa.length;i++){
@@ -722,10 +736,11 @@
           const date=parseDate(ci.date>=0?row[ci.date]:"");
           const desc=ci.desc>=0?String(row[ci.desc]==null?"":row[ci.desc]).trim():"";
           const user=ci.user>=0?String(row[ci.user]==null?"":row[ci.user]).trim():"";
+          const cat=ci.cat>=0?String(row[ci.cat]==null?"":row[ci.cat]).trim():"";
           let dr=ci.dr>=0?num(row[ci.dr]):0, cr=ci.cr>=0?num(row[ci.cr]):0;
           if(ci.dr<0 && ci.cr<0 && ci.amt>=0) dr=num(row[ci.amt]);
           if(!date && !desc && !dr && !cr) continue;
-          out.push({date,desc,user,dr,cr});
+          out.push({date,desc,user,cat,dr,cr});
         }
         if(!out.length){ setErr("No data rows found below the header."); return; }
         setRows(out); setStep("preview");
@@ -747,8 +762,8 @@
       const list=[];
       rows.forEach(r=>{
         const d=r.date||todayISO(); const creator=resolveUser(r.user)||meEmail;
-        const mk=(kind,amt)=>({ entry_type:kind, amount:amt, category: kind==="income"?incCat:expCat,
-          note:r.desc||(kind==="income"?incCat:expCat), entry_date:d, mode:null, source:"excel", created_by:creator });
+        const mk=(kind,amt)=>({ entry_type:kind, amount:amt, category: r.cat || (kind==="income"?incCat:expCat),
+          note:r.desc||r.cat||(kind==="income"?incCat:expCat), entry_date:d, mode:null, source:"excel", created_by:creator });
         if(r.dr>0) list.push(mk(drIsIncome?"income":"expense", r.dr));
         if(r.cr>0) list.push(mk(drIsIncome?"expense":"income", r.cr));
       });
@@ -786,11 +801,12 @@
           <button class=${!drIsIncome?"on":""} onClick=${()=>setMapping("cr_income")}>Cr = Income</button>
         </div>
         <div class="row" style=${{gap:10}}>
-          <div class="grow"><label>Income category</label>
+          <div class="grow"><label>Default income category</label>
             <select value=${incCat} onChange=${e=>setIncCat(e.target.value)}>${INCOME_CATS.map(c=>html`<option key=${c} value=${c}>${c}</option>`)}</select></div>
-          <div class="grow"><label>Expense category</label>
+          <div class="grow"><label>Default expense category</label>
             <select value=${expCat} onChange=${e=>setExpCat(e.target.value)}>${EXPENSE_CATS.map(c=>html`<option key=${c} value=${c}>${c}</option>`)}</select></div>
         </div>
+        <p class="tiny muted" style=${{margin:"6px 2px 0"}}>Each row uses its own <b>Category</b> column when present; the defaults above fill in only where a row has none. Entries are attributed to the row's <b>Account</b> / user.</p>
         <div class="stats" style=${{marginTop:12}}>
           <div class="stat green"><div class="k">Income</div><div class="v">${money(totals.inc)}</div></div>
           <div class="stat red"><div class="k">Expense</div><div class="v">${money(totals.exp)}</div></div>
@@ -798,7 +814,7 @@
         <div class="tiny muted" style=${{margin:"12px 2px 4px"}}>Preview (first 8 of ${rows.length})${totals.skip?(" · "+totals.skip+" rows have no amount and will be skipped"):""}</div>
         ${rows.slice(0,8).map((r,i)=> html`<div class="entry" key=${i}>
           <div class="grow"><div class="ell"><b>${r.desc||"—"}</b></div>
-            <div class="tiny muted">${fmtDate(r.date)||"(no date)"} · ${dispName(resolveUser(r.user),userMap)||"unattributed"}</div></div>
+            <div class="tiny muted ell">${fmtDate(r.date)||"(no date)"} · ${dispName(resolveUser(r.user),userMap)||"unattributed"}${r.cat?html` · <span class="pill">${r.cat}</span>`:""}</div></div>
           <div style=${{textAlign:"right"}}>
             ${r.dr>0 && html`<div class="amt ${drIsIncome?"c":"d"}">Dr ${money(r.dr)}</div>`}
             ${r.cr>0 && html`<div class="amt ${drIsIncome?"d":"c"}">Cr ${money(r.cr)}</div>`}
